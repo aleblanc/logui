@@ -1,0 +1,16 @@
+includes:
+    - vendor/phpstan/phpstan-symfony/extension.neon
+
+parameters:
+    level: 8
+    paths:
+        - src
+        - tests
+    bootstrapFiles:
+        - vendor/autoload.php
+
+services:
+    -
+        class: Aleblanc\LogUi\PhpStan\CoreMustNotDependOnSymfonyRule
+        tags:
+            - phpstan.rules.rule

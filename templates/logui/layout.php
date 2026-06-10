@@ -1,0 +1,76 @@
+<?php
+/** @var string $title */
+/** @var string $content */
+/** @var string $uiPath */
+$nav = $uiPath ?? '/_logui';
+?><!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= $this->escape($title) ?> · LogUI</title>
+    <script>(function(){try{var t=localStorage.getItem('logui-theme');if(t){document.documentElement.dataset.theme=t;}}catch(e){}})();</script>
+    <style>
+        /* Dark (default) */
+        :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#d7dbe3; --mut:#8b93a3; --accent:#5ac8fa; --err:#ff6b6b; --warn:#ffd166; }
+        [data-theme="light"] { --bg:#f7f8fa; --panel:#ffffff; --line:#e3e6ec; --txt:#1b1f27; --mut:#697086; --accent:#0969da; --err:#c0392b; --warn:#b7791f; }
+        [data-theme="sepia"] { --bg:#f3ead6; --panel:#fbf4e3; --line:#e0d3b0; --txt:#433520; --mut:#8a795c; --accent:#9a5b33; --err:#a8341f; --warn:#9a6b00; }
+        * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
+        header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; }
+        header b { font-family:ui-monospace,monospace; letter-spacing:.5px; } header .mut { color:var(--mut); }
+        header .spacer { flex:1; }
+        select#logui-theme { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:4px 8px; border-radius:6px; }
+        main { padding:20px; max-width:1100px; margin:0 auto; }
+        a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+        table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+        th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+        tr:hover td { background:var(--panel); }
+        .badge { font:11px ui-monospace,monospace; padding:1px 7px; border-radius:10px; border:1px solid var(--line); }
+        .lvl-error,.lvl-critical,.lvl-alert,.lvl-emergency { color:var(--err); border-color:var(--err); }
+        .lvl-warning { color:var(--warn); border-color:var(--warn); }
+        .num { font-family:ui-monospace,monospace; text-align:right; }
+        form.filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+        input,select { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:6px 8px; border-radius:6px; }
+        button { background:var(--accent); border:0; color:#fff; padding:6px 14px; border-radius:6px; cursor:pointer; }
+        pre { background:var(--panel); border:1px solid var(--line); padding:12px; border-radius:8px; overflow:auto; }
+        .ctx { color:var(--mut); }
+        nav.tabs { display:flex; gap:16px; padding:0 20px; border-bottom:1px solid var(--line); }
+        nav.tabs a { padding:10px 0; color:var(--mut); border-bottom:2px solid transparent; }
+        nav.tabs a:hover { color:var(--txt); text-decoration:none; }
+        .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
+        .stat { display:inline-block; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:13px; color:var(--mut); cursor:pointer; }
+        .stat:hover { border-color:var(--accent); text-decoration:none; color:var(--txt); }
+        .stat.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+        .stat b { color:var(--txt); font-family:ui-monospace,monospace; font-size:16px; margin-right:2px; }
+        .stat.sev-critical b, .stat.sev-error b { color:var(--err); } .stat.sev-warning b { color:var(--warn); }
+        .pager { display:flex; gap:18px; align-items:center; justify-content:center; margin-top:18px; }
+        .glyph-cli { font-family:ui-monospace,monospace; font-weight:700; color:var(--accent); border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+    </style>
+</head>
+<body>
+    <header>
+        <b>🔎 LogUI</b> <span class="mut"><?= $this->escape($title) ?></span>
+        <span class="spacer"></span>
+        <select id="logui-theme" aria-label="Theme">
+            <option value="dark">🌙 Dark</option>
+            <option value="light">☀️ Light</option>
+            <option value="sepia">📜 Sepia</option>
+        </select>
+    </header>
+    <nav class="tabs">
+        <a href="<?= $this->escape($nav) ?>">Requests</a>
+        <a href="<?= $this->escape($nav) ?>/logs">Files</a>
+    </nav>
+    <main><?= $content ?></main>
+    <script>
+        (function () {
+            var sel = document.getElementById('logui-theme');
+            sel.value = document.documentElement.dataset.theme || 'dark';
+            sel.addEventListener('change', function () {
+                document.documentElement.dataset.theme = sel.value;
+                try { localStorage.setItem('logui-theme', sel.value); } catch (e) {}
+            });
+        })();
+    </script>
+</body>
+</html>
