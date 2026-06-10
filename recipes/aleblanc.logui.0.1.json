@@ -1,0 +1,65 @@
+{
+  "manifests": {
+    "aleblanc/logui": {
+      "manifest": {
+        "bundles": {
+          "Aleblanc\\LogUi\\Bridge\\Symfony\\LogUiBundle": [
+            "all"
+          ]
+        },
+        "copy-from-recipe": {
+          "config/": "%CONFIG_DIR%/"
+        },
+        "env": {
+          "LOGUI_PASSWORD": "%generate(secret)%"
+        },
+        "aliases": [
+          "logui",
+          "log-ui"
+        ],
+        "post-install-output": [
+          "  <bg=blue;fg=white> LogUI </> is ready \u2014 open <comment>/_logui</comment> (dev/test).",
+          "",
+          "  * To capture Monolog records, add this handler in <comment>config/packages/monolog.yaml</comment>:",
+          "        monolog:",
+          "            handlers:",
+          "                logui:",
+          "                    type: service",
+          "                    id: Aleblanc\\LogUi\\Bridge\\Symfony\\Monolog\\LogUiHandler",
+          "",
+          "  * In production the UI is fail-closed: set <comment>LOGUI_PASSWORD</comment>, or use <comment>log_ui.access: delegate</comment>",
+          "    and protect the route in security.yaml.",
+          ""
+        ]
+      },
+      "files": {
+        "config/packages/log_ui.yaml": {
+          "contents": [
+            "log_ui:",
+            "    # All settings are optional \u2014 these defaults work out of the box.",
+            "    # See the README for the full reference.",
+            "    #",
+            "    # telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'",
+            "    # slow_query_ms: 50",
+            "    # access: password            # password | delegate",
+            "    # ui_password: '%env(LOGUI_PASSWORD)%'",
+            "    # ignore_paths: ['/_wdt', '/_profiler']",
+            "    # discover_monolog: true",
+            "    # log_dirs: ['%kernel.logs_dir%']",
+            ""
+          ],
+          "executable": false
+        },
+        "config/routes/log_ui.yaml": {
+          "contents": [
+            "log_ui:",
+            "    resource: '@LogUiBundle/config/routes.php'",
+            ""
+          ],
+          "executable": false
+        }
+      },
+      "ref": "5e2c7c05991f901c942a829bcfa760334fbd3fd1"
+    }
+  }
+}

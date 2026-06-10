@@ -1,0 +1,11 @@
+log_ui:
+    # All settings are optional — these defaults work out of the box.
+    # See the README for the full reference.
+    #
+    # telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'
+    # slow_query_ms: 50
+    # access: password            # password | delegate
+    # ui_password: '%env(LOGUI_PASSWORD)%'
+    # ignore_paths: ['/_wdt', '/_profiler']
+    # discover_monolog: true
+    # log_dirs: ['%kernel.logs_dir%']

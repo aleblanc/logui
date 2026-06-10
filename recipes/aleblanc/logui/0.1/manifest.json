@@ -1,0 +1,26 @@
+{
+    "bundles": {
+        "Aleblanc\\LogUi\\Bridge\\Symfony\\LogUiBundle": ["all"]
+    },
+    "copy-from-recipe": {
+        "config/": "%CONFIG_DIR%/"
+    },
+    "env": {
+        "LOGUI_PASSWORD": "%generate(secret)%"
+    },
+    "aliases": ["logui", "log-ui"],
+    "post-install-output": [
+        "  <bg=blue;fg=white> LogUI </> is ready — open <comment>/_logui</comment> (dev/test).",
+        "",
+        "  * To capture Monolog records, add this handler in <comment>config/packages/monolog.yaml</comment>:",
+        "        monolog:",
+        "            handlers:",
+        "                logui:",
+        "                    type: service",
+        "                    id: Aleblanc\\LogUi\\Bridge\\Symfony\\Monolog\\LogUiHandler",
+        "",
+        "  * In production the UI is fail-closed: set <comment>LOGUI_PASSWORD</comment>, or use <comment>log_ui.access: delegate</comment>",
+        "    and protect the route in security.yaml.",
+        ""
+    ]
+}

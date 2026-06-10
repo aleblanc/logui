@@ -1,0 +1,12 @@
+{
+    "recipes": {
+        "aleblanc/logui": ["0.1"]
+    },
+    "branch": "main",
+    "is_contrib": true,
+    "_links": {
+        "repository": "github.com/aleblanc/logui",
+        "origin_template": "{package}:{version}@github.com/aleblanc/logui:main",
+        "recipe_template": "https://raw.githubusercontent.com/aleblanc/logui/main/recipes/{package_dotted}.{version}.json"
+    }
+}
