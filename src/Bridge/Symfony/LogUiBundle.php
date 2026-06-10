@@ -13,6 +13,7 @@ use Aleblanc\LogUi\Bridge\Symfony\Log\RawLogSources;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\HandlerPathDiscovery;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler;
 use Aleblanc\LogUi\Bridge\Symfony\Security\UiAccessGuard;
+use Aleblanc\LogUi\Bridge\Symfony\Security\UiAuthCookieListener;
 use Aleblanc\LogUi\Bridge\Symfony\Telemetry\TelemetryLogger;
 use Aleblanc\LogUi\Core\Capture\ProfileContextFactory;
 use Aleblanc\LogUi\Core\Capture\Redactor;
@@ -82,7 +83,10 @@ final class LogUiBundle extends AbstractBundle
                     ->defaultValue('password')
                     ->info("'password': LogUI gate (dev/test open, prod LOGUI_PASSWORD). 'delegate': protect the route via your own firewall/role.")
                 ->end()
-                ->scalarNode('ui_password')->defaultNull()->end()
+                ->scalarNode('ui_password')
+                    ->defaultValue('%env(LOGUI_PASSWORD)%')
+                    ->info('Password for access=password in prod. Defaults to the LOGUI_PASSWORD env var the recipe generates.')
+                ->end()
                 ->arrayNode('ignore_paths')
                     ->scalarPrototype()->end()
                     ->defaultValue(['/_wdt', '/_profiler'])
@@ -124,8 +128,8 @@ final class LogUiBundle extends AbstractBundle
             $config['max_records_per_profile'],
             $config['slow_query_ms'],
         ]);
-        // Telemetry is written into the host's existing log stream and read back from it — no separate store.
-        $services->set('logui.telemetry', TelemetryLogger::class)->args([new Reference('logger')]);
+        // Telemetry is appended directly to its own file (bypasses host Monolog routing) and read back from it.
+        $services->set('logui.telemetry', TelemetryLogger::class)->args([$config['telemetry_file']]);
         $services->set('logui.telemetry_reader', TelemetryReader::class);
         $services->set('logui.renderer', Renderer::class)->args([\dirname(__DIR__, 3).'/templates/logui']);
 
@@ -142,7 +146,16 @@ final class LogUiBundle extends AbstractBundle
         // It is auto-wired onto every channel via prependExtension(); capture_monolog gates it at runtime.
         $services->set(LogUiHandler::class)->args([new Reference('logui.current'), $config['capture_monolog']])->public();
 
-        $services->set('logui.guard', UiAccessGuard::class)->args(['%kernel.environment%', $config['ui_password'], $config['access']]);
+        // ui_password defaults to %env(LOGUI_PASSWORD)%; provide an empty fallback so a missing
+        // env var resolves to '' (guard then fail-closes) instead of throwing a container error.
+        if (!$builder->hasParameter('env(LOGUI_PASSWORD)')) {
+            $builder->setParameter('env(LOGUI_PASSWORD)', '');
+        }
+        $services->set('logui.guard', UiAccessGuard::class)->args(['%kernel.environment%', $config['ui_password'], $config['access'], $config['ui_path']]);
+        // Keeps password-mode users logged in across navigation (mints a session cookie on success).
+        $services->set('logui.auth_cookie_listener', UiAuthCookieListener::class)
+            ->args([new Reference('logui.guard'), $config['ui_path']])
+            ->tag('kernel.event_subscriber');
 
         $services->set(UiController::class)
             ->args([new Reference('logui.telemetry_reader'), $config['telemetry_file'], new Reference('logui.renderer'), new Reference('logui.guard'), $config['ui_path']])

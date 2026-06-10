@@ -28,6 +28,12 @@ final class FixedClock implements Clock
         $this->micro += $ms / 1000.0;
     }
 
+    /** Advance the wall clock by N seconds (for expiry assertions). */
+    public function advanceSeconds(int $seconds): void
+    {
+        $this->now = $this->now->modify(sprintf('%+d seconds', $seconds));
+    }
+
     public function now(): \DateTimeImmutable
     {
         return $this->now;

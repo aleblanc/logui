@@ -6,9 +6,9 @@ LogUI is an embeddable Composer package (in the spirit of Laravel Telescope / th
 that adds a small **web UI** to your app to browse requests, console commands and raw log files.
 
 For every HTTP request and console command it captures pragmatic **stats** (duration, RAM
-start→end→peak, SQL query count, log-level counts) plus the request's own log records, and writes it
-all as **one line into your existing log file** (a `LOGUI@{json}` entry). The UI reads those lines
-back. It also reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
+start→end→peak, SQL query count, log-level counts) plus the request's own log records, and appends it
+all as **one `LOGUI@{json}` line to a telemetry log file**. The UI reads those lines back. It also
+reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 
 **No separate store. No new database. No front-end build.**
 
@@ -22,7 +22,7 @@ back. It also reads your **raw `.log` files** directly (Monolog, nginx access/er
 
 - Auto-capture: **HTTP requests**, **console commands**, **Monolog records** (level counts + the request's records), **uncaught exceptions**, **SQL queries** (count + slow, when `doctrine/dbal` is present).
 - Pure-PHP stats (`memory_get_usage`/`peak` + a Doctrine middleware) — **no PHP extension required**.
-- **Telemetry written into your existing logs** (`LOGUI@` sentinel), read back by the UI — no separate store. Reads are **tail-bounded** (multi-GB logs are fine).
+- **Telemetry appended to a log file** (`LOGUI@` sentinel), read back by the UI — no database. Written **directly** (not through Monolog), so it works in prod regardless of `fingers_crossed`/`rotating_file` handlers. Reads are **tail-bounded** (multi-GB logs are fine).
 - **Request detail** shows that request's log records (all channels, even ones your file handlers drop), filterable by level/channel.
 - **Raw `.log` viewer** (Files tab): multi-format parser + auto-discovery of Monolog handler files + a scan of your log directories.
 - **Dashboard UI**: clickable stats (general counts), method column, filters (level/type/method/search), pagination (100/page), and **dark / light / sepia** themes.
@@ -103,26 +103,50 @@ log_ui:
 
 ### Access control in production
 
-- **`access: password`** (default) — open in `dev`/`test`; **fail-closed** in production: it serves
-  nothing unless `LOGUI_PASSWORD` is set. Use a **dedicated** password — never your `APP_SECRET`.
-- **`access: delegate`** — LogUI gates nothing and trusts your own security. Protect the route
-  yourself, e.g. in `security.yaml`:
-  ```yaml
-  - { path: ^/_logui, roles: ROLE_ADMIN }
-  ```
-  Recommended when your app already has authentication.
+In `dev`/`test` the UI is open. In `prod` it is **fail-closed** — choose how to unlock it:
+
+**`access: password`** (default) — serves nothing unless `LOGUI_PASSWORD` is set (the recipe
+generates one in `.env`; put a **real, dedicated** secret in `.env.local` for production — never reuse
+`APP_SECRET`). `ui_password` defaults to `%env(LOGUI_PASSWORD)%`, so it works out of the box. **Log in**
+by sending that password on the request:
+
+```bash
+# HTTP header (preferred — doesn't end up in access logs)
+curl -H "X-LogUI-Password: <your-password>" https://example.com/_logui
+
+# or query string (browser)
+https://example.com/_logui?_pw=<your-password>
+```
+
+On a successful login LogUI sets a **session cookie** (`logui_auth`, HttpOnly, derived from the
+password via HMAC — never the password itself), so you only supply `?_pw=` once and **navigation
+then works without it**. The cookie lasts for the browser session and invalidates if the password
+changes. For a fully integrated production console (your own login, roles), `delegate` is still the
+cleaner choice.
+
+**`access: delegate`** (recommended in prod) — LogUI gates nothing and trusts your own security.
+You log in with your normal app session, and navigation just works. Protect the route in
+`security.yaml`:
+
+```yaml
+access_control:
+    - { path: ^/_logui, roles: ROLE_ADMIN }
+```
 
 ## How it works
 
 A request-scoped holder is opened on `kernel.request`, fed log records by a Monolog handler and
-exceptions by the kernel exception event, then finalized on `kernel.terminate`, which writes a single
-`LOGUI@{json}` line through your logger. Console commands are handled symmetrically via `ConsoleEvents`.
-The UI reads those lines back (`TelemetryReader`, tail-bounded) and renders the dashboard with Core's
-filtering/sorting and a dependency-free PHP template renderer. SQL counting is a DBAL middleware,
-registered only when Doctrine DBAL is installed.
+exceptions by the kernel exception event, then finalized on `kernel.terminate`, which **appends a
+single `LOGUI@{json}` line directly to `telemetry_file`** (not through Monolog — so it's immune to
+`fingers_crossed` buffering and `rotating_file` naming, which otherwise swallow telemetry in prod).
+Console commands are handled symmetrically via `ConsoleEvents`. The UI reads those lines back
+(`TelemetryReader`, tail-bounded) and renders the dashboard with Core's filtering/sorting and a
+dependency-free PHP template renderer. SQL counting is a DBAL middleware, registered only when
+Doctrine DBAL is installed.
 
-Because the telemetry lives in your normal log stream, **your own log rotation governs retention** —
-LogUI keeps no files of its own.
+The telemetry file is a normal append-only log. Reads are tail-bounded, but the file itself grows
+over time — **rotate it like any log** (logrotate, or point `telemetry_file` at a path your existing
+rotation already covers).
 
 ## Architecture
 

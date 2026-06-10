@@ -13,8 +13,6 @@ use Aleblanc\LogUi\Core\Model\Profile;
 use Aleblanc\LogUi\Core\Stats\MemoryProbe;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use Aleblanc\LogUi\Tests\Support\FixedClock;
-use Monolog\Handler\StreamHandler;
-use Monolog\Logger;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -40,7 +38,7 @@ final class RequestProfilerListenerTest extends TestCase
     private function listener(CurrentProfile $current, FixedClock $clock): RequestProfilerListener
     {
         $factory = new ProfileContextFactory($clock, new Redactor([]), new MemoryProbe(), 1000, 50.0);
-        $telemetry = new TelemetryLogger(new Logger('app', [new StreamHandler($this->logFile)]));
+        $telemetry = new TelemetryLogger($this->logFile);
 
         return new RequestProfilerListener($current, $factory, $telemetry, ['/_logui', '/_wdt']);
     }

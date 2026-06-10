@@ -13,8 +13,6 @@ use Aleblanc\LogUi\Core\Model\ProfileType;
 use Aleblanc\LogUi\Core\Stats\MemoryProbe;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use Aleblanc\LogUi\Tests\Support\FixedClock;
-use Monolog\Handler\StreamHandler;
-use Monolog\Logger;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
@@ -41,7 +39,7 @@ final class CommandProfilerListenerTest extends TestCase
         $clock = new FixedClock(new \DateTimeImmutable('2026-06-10T14:00:00+00:00'));
         $current = new CurrentProfile();
         $factory = new ProfileContextFactory($clock, new Redactor([]), new MemoryProbe(), 1000, 50.0);
-        $telemetry = new TelemetryLogger(new Logger('app', [new StreamHandler($this->logFile)]));
+        $telemetry = new TelemetryLogger($this->logFile);
         $listener = new CommandProfilerListener($current, $factory, $telemetry);
 
         $command = new Command('app:demo');
