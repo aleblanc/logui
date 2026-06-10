@@ -17,8 +17,16 @@ final class TestKernel extends Kernel
 {
     use MicroKernelTrait;
 
-    public function __construct(private readonly string $varDir)
-    {
+    /**
+     * @param bool      $manualLoguiHandler wire the LogUI handler by hand in monolog config (legacy path);
+     *                                      false relies on LogUiBundle::prependExtension() auto-wiring it
+     * @param bool|null $captureMonolog     value for log_ui.capture_monolog (null = leave default)
+     */
+    public function __construct(
+        private readonly string $varDir,
+        private readonly bool $manualLoguiHandler = false,
+        private readonly ?bool $captureMonolog = null,
+    ) {
         parent::__construct('test', false);
     }
 
@@ -37,15 +45,17 @@ final class TestKernel extends Kernel
             'php_errors' => ['log' => true],
             'router' => ['utf8' => true],
         ]);
-        $container->extension('monolog', [
-            'handlers' => [
-                'logui' => ['type' => 'service', 'id' => LogUiHandler::class],
-                'main' => ['type' => 'stream', 'path' => $this->varDir.'/log/app.log', 'level' => 'debug'],
-            ],
-        ]);
-        $container->extension('log_ui', [
-            'telemetry_file' => $this->varDir.'/log/app.log',
-        ]);
+        $handlers = ['main' => ['type' => 'stream', 'path' => $this->varDir.'/log/app.log', 'level' => 'debug']];
+        if ($this->manualLoguiHandler) {
+            $handlers['logui'] = ['type' => 'service', 'id' => LogUiHandler::class];
+        }
+        $container->extension('monolog', ['handlers' => $handlers]);
+
+        $logUi = ['telemetry_file' => $this->varDir.'/log/app.log'];
+        if (null !== $this->captureMonolog) {
+            $logUi['capture_monolog'] = $this->captureMonolog;
+        }
+        $container->extension('log_ui', $logUi);
     }
 
     protected function configureRoutes(RoutingConfigurator $routes): void

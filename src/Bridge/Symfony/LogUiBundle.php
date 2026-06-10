@@ -38,6 +38,34 @@ final class LogUiBundle extends AbstractBundle
         return \dirname(__DIR__, 3);
     }
 
+    /**
+     * Auto-wire the LogUI handler into Monolog so the host never has to edit monolog.yaml.
+     * We prepend a `service` handler into the monolog config; MonologBundle then attaches it
+     * to every channel itself (robust across versions, and visible in `debug:config monolog`).
+     * The handler is always wired — capture_monolog gates it at runtime (so an env toggle works).
+     */
+    public function prependExtension(ContainerConfigurator $container, ContainerBuilder $builder): void
+    {
+        if (!$builder->hasExtension('monolog')) {
+            return;
+        }
+
+        // If the host already wired the handler by hand (older docs/recipe), don't add a second one.
+        foreach ($builder->getExtensionConfig('monolog') as $config) {
+            foreach ((array) ($config['handlers'] ?? []) as $handler) {
+                if (\is_array($handler) && ($handler['id'] ?? null) === LogUiHandler::class) {
+                    return;
+                }
+            }
+        }
+
+        $builder->prependExtensionConfig('monolog', [
+            'handlers' => [
+                'logui' => ['type' => 'service', 'id' => LogUiHandler::class],
+            ],
+        ]);
+    }
+
     public function configure(DefinitionConfigurator $definition): void
     {
         $definition->rootNode()
@@ -59,6 +87,10 @@ final class LogUiBundle extends AbstractBundle
                     ->scalarPrototype()->end()
                     ->defaultValue(['/_wdt', '/_profiler'])
                     ->info('Request path prefixes never profiled (the LogUI UI path is always added).')
+                ->end()
+                ->booleanNode('capture_monolog')
+                    ->defaultTrue()
+                    ->info('Auto-wire the LogUI handler onto every Monolog channel (no manual monolog.yaml edit). Set false (or via env) to disable capture, e.g. in prod.')
                 ->end()
                 ->booleanNode('discover_monolog')->defaultTrue()->end()
                 ->arrayNode('log_dirs')
@@ -106,8 +138,9 @@ final class LogUiBundle extends AbstractBundle
             ->args([new Reference('logui.current'), new Reference('logui.factory'), new Reference('logui.telemetry')])
             ->tag('kernel.event_subscriber');
 
-        // Public so monolog config can reference it: handlers: { logui: { type: service, id: ... } }
-        $services->set(LogUiHandler::class)->args([new Reference('logui.current')])->public();
+        // Public so monolog config can reference it: handlers: { logui: { type: service, id: ... } }.
+        // It is auto-wired onto every channel via prependExtension(); capture_monolog gates it at runtime.
+        $services->set(LogUiHandler::class)->args([new Reference('logui.current'), $config['capture_monolog']])->public();
 
         $services->set('logui.guard', UiAccessGuard::class)->args(['%kernel.environment%', $config['ui_password'], $config['access']]);
 

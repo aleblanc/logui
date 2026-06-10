@@ -45,4 +45,43 @@ final class LogUiHandlerTest extends TestCase
 
         $this->expectNotToPerformAssertions();
     }
+
+    public function test_captures_nothing_when_disabled(): void
+    {
+        $current = $this->activeProfile();
+
+        $handler = new LogUiHandler($current, enabled: false);
+        $handler->handle(new LogRecord(new \DateTimeImmutable(), 'app', Level::Warning, 'careful', []));
+
+        $profile = $current->finish(200);
+        self::assertNotNull($profile);
+        self::assertCount(0, $profile->records, 'disabled handler records nothing');
+    }
+
+    public function test_ignores_its_own_telemetry_line(): void
+    {
+        $current = $this->activeProfile();
+
+        // The TelemetryLogger writes this through the logger at terminate; it must not
+        // be mirrored back into the profile (noise / self-capture).
+        $handler = new LogUiHandler($current);
+        $handler->handle(new LogRecord(new \DateTimeImmutable(), 'app', Level::Info, 'LOGUI@{"id":"r1"}', []));
+        $handler->handle(new LogRecord(new \DateTimeImmutable(), 'app', Level::Info, 'real message', []));
+
+        $profile = $current->finish(200);
+        self::assertNotNull($profile);
+        self::assertCount(1, $profile->records, 'only the real record is kept');
+        self::assertSame('real message', $profile->records[0]->message);
+    }
+
+    private function activeProfile(): CurrentProfile
+    {
+        $current = new CurrentProfile();
+        $current->begin(
+            (new ProfileContextFactory(new SystemClock(), new Redactor([]), new MemoryProbe(), 1000, 50.0))
+                ->create('r1', ProfileType::Http, 'GET /')
+        );
+
+        return $current;
+    }
 }

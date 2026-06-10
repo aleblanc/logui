@@ -67,16 +67,9 @@ This auto-registers the bundle, creates `config/routes/log_ui.yaml` + `config/pa
 and writes a generated `LOGUI_PASSWORD` to `.env` (a default, like `APP_SECRET`; for production put a
 real secret in `.env.local`, which isn't committed).
 
-**3. Capture Monolog** — the only manual step (a recipe can't patch your existing `monolog.yaml`).
-Add the handler under `config/packages/monolog.yaml`:
-
-```yaml
-monolog:
-    handlers:
-        logui:
-            type: service
-            id: Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler
-```
+**Monolog capture is automatic** — the bundle wires its handler onto every channel for you (no
+`monolog.yaml` edit). Disable it with `log_ui.capture_monolog: false` (e.g. in production); see
+[Configuration](#configuration).
 
 **Open the UI at `/_logui`** — the default path (configurable via `log_ui.ui_path`). It's open in
 `dev`/`test`; in `prod` it's fail-closed behind `LOGUI_PASSWORD` (or delegate to your firewall, see
@@ -84,9 +77,9 @@ monolog:
 
 > **Without the recipe** (or before tagging a release), do it by hand: add
 > `Aleblanc\LogUi\Bridge\Symfony\LogUiBundle::class => ['all' => true]` to `config/bundles.php`,
-> create `config/routes/log_ui.yaml` with `resource: '@LogUiBundle/config/routes.php'`, add the
-> Monolog handler above, and set `LOGUI_PASSWORD` yourself. The bundle's config alias is **`log_ui`**.
-> Recipe details & the `symfony/recipes-contrib` path: [`recipes/README.md`](recipes/README.md).
+> create `config/routes/log_ui.yaml` with `resource: '@LogUiBundle/config/routes.php'`, and set
+> `LOGUI_PASSWORD` yourself. The bundle's config alias is **`log_ui`**. Monolog capture is still
+> automatic. Recipe details & the `symfony/recipes-contrib` path: [`recipes/README.md`](recipes/README.md).
 
 ## Configuration
 
@@ -101,6 +94,7 @@ log_ui:
     access: password                   # password (default) | delegate
     ui_password: '%env(LOGUI_PASSWORD)%'  # required in prod when access=password
     ignore_paths: ['/_wdt', '/_profiler']  # never profiled (the UI path is always added)
+    capture_monolog: true              # auto-wire the handler onto every Monolog channel
     discover_monolog: true             # auto-list files from Monolog handlers (Files tab)
     log_dirs: ['%kernel.logs_dir%']    # directories scanned for *.log (Files tab)
     external_logs: []                  # extra .log files to expose (outside the dirs above)
