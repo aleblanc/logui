@@ -1,11 +1,17 @@
 log_ui:
-    # All settings are optional — these defaults work out of the box.
-    # See the README for the full reference.
-    #
+    # Access control. In dev/test the UI is open; in prod it is fail-closed.
+    #   access: password  → log in with the LOGUI_PASSWORD generated in .env, sent as the
+    #                       header  X-LogUI-Password: <pw>  or the query  /_logui?_pw=<pw>.
+    #                       (Put a real secret in .env.local for production.)
+    #   access: delegate  → LogUI gates nothing; protect ^/_logui yourself in security.yaml
+    #                       (recommended in prod — works with your normal login + navigation).
+    access: password
+    ui_password: '%env(LOGUI_PASSWORD)%'
+
+    # Everything below is optional — these are the defaults, shown for discoverability.
+    # capture_monolog: true                  # auto-wire the handler onto every Monolog channel
     # telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'
     # slow_query_ms: 50
-    # access: password            # password | delegate
-    # ui_password: '%env(LOGUI_PASSWORD)%'
     # ignore_paths: ['/_wdt', '/_profiler']
     # discover_monolog: true
     # log_dirs: ['%kernel.logs_dir%']

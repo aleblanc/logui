@@ -18,14 +18,10 @@
           "log-ui"
         ],
         "post-install-output": [
-          "  <bg=blue;fg=white> LogUI </> is ready \u2014 open <comment>/_logui</comment> (dev/test).",
+          "  <bg=blue;fg=white> LogUI </> is ready — open <comment>/_logui</comment> (dev/test).",
           "",
-          "  * To capture Monolog records, add this handler in <comment>config/packages/monolog.yaml</comment>:",
-          "        monolog:",
-          "            handlers:",
-          "                logui:",
-          "                    type: service",
-          "                    id: Aleblanc\\LogUi\\Bridge\\Symfony\\Monolog\\LogUiHandler",
+          "  * Monolog capture is automatic — every channel is wired for you.",
+          "    Disable it with <comment>log_ui.capture_monolog: false</comment> (e.g. in production).",
           "",
           "  * In production the UI is fail-closed: set <comment>LOGUI_PASSWORD</comment>, or use <comment>log_ui.access: delegate</comment>",
           "    and protect the route in security.yaml.",
@@ -36,30 +32,34 @@
         "config/packages/log_ui.yaml": {
           "contents": [
             "log_ui:",
-            "    # All settings are optional \u2014 these defaults work out of the box.",
-            "    # See the README for the full reference.",
-            "    #",
+            "    # Access control. In dev/test the UI is open; in prod it is fail-closed.",
+            "    #   access: password  → log in with the LOGUI_PASSWORD generated in .env, sent as the",
+            "    #                       header  X-LogUI-Password: <pw>  or the query  /_logui?_pw=<pw>.",
+            "    #                       (Put a real secret in .env.local for production.)",
+            "    #   access: delegate  → LogUI gates nothing; protect ^/_logui yourself in security.yaml",
+            "    #                       (recommended in prod — works with your normal login + navigation).",
+            "    access: password",
+            "    ui_password: '%env(LOGUI_PASSWORD)%'",
+            "",
+            "    # Everything below is optional — these are the defaults, shown for discoverability.",
+            "    # capture_monolog: true                  # auto-wire the handler onto every Monolog channel",
             "    # telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'",
             "    # slow_query_ms: 50",
-            "    # access: password            # password | delegate",
-            "    # ui_password: '%env(LOGUI_PASSWORD)%'",
             "    # ignore_paths: ['/_wdt', '/_profiler']",
             "    # discover_monolog: true",
-            "    # log_dirs: ['%kernel.logs_dir%']",
-            ""
+            "    # log_dirs: ['%kernel.logs_dir%']"
           ],
           "executable": false
         },
         "config/routes/log_ui.yaml": {
           "contents": [
             "log_ui:",
-            "    resource: '@LogUiBundle/config/routes.php'",
-            ""
+            "    resource: '@LogUiBundle/config/routes.php'"
           ],
           "executable": false
         }
       },
-      "ref": "5e2c7c05991f901c942a829bcfa760334fbd3fd1"
+      "ref": "c4cab5324418781cb65e2e3a9331e914c48623fe"
     }
   }
 }
