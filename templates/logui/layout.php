@@ -45,6 +45,9 @@ $nav = $uiPath ?? '/_logui';
         .stat.sev-critical b, .stat.sev-error b { color:var(--err); } .stat.sev-warning b { color:var(--warn); }
         .pager { display:flex; gap:18px; align-items:center; justify-content:center; margin-top:18px; }
         .glyph-cli { font-family:ui-monospace,monospace; font-weight:700; color:var(--accent); border:1px solid var(--line); border-radius:4px; padding:0 5px; }
+        .msg-full { white-space:pre-wrap; }
+        .msg-toggle { background:transparent; color:var(--accent); border:0; padding:0 2px; cursor:pointer; font-size:12px; }
+        .msg-toggle:hover { text-decoration:underline; }
     </style>
 </head>
 <body>

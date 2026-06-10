@@ -12,13 +12,11 @@ back. It also reads your **raw `.log` files** directly (Monolog, nginx access/er
 
 **No separate store. No new database. No front-end build.**
 
-## Why (vs. plain log viewers)
+![LogUI — request dashboard](screenshots/requests.png)
+*Request list: clickable stats, HTTP + console profiles, method / level / SQL columns, themes.*
 
-`opcodesio/log-viewer` & co. display raw log lines. LogUI goes a step further:
-
-1. **Profiling** — duration / RAM start→end→peak / SQL count **per request and per command**, written into *your* logs.
-2. **Dashboard** — clickable stats (critical/error/warning, requests/commands), a method column, level/type/method/search filters, pagination.
-3. **Multi-format & file-based** — parses Monolog **and** nginx access/error, on your existing files, usable outside `dev`.
+![LogUI — request detail](screenshots/detail.png)
+*Request detail: timing, RAM start→peak, SQL count, and the request's own log records (filterable by level & channel).*
 
 ## Features
 
@@ -39,24 +37,38 @@ back. It also reads your **raw `.log` files** directly (Monolog, nginx access/er
 
 ## Install (Symfony)
 
+LogUI ships a Flex recipe, so the quickest install is to point your app at this repo as a custom
+recipe endpoint and require the package — the bundle, route and config are wired automatically, and
+a random `LOGUI_PASSWORD` is generated into `.env` (override it in `.env.local` for production).
+
+**1. Add the recipe endpoint** to your app's `composer.json`:
+
+```json
+{
+    "extra": {
+        "symfony": {
+            "allow-contrib": true,
+            "endpoint": [
+                "https://raw.githubusercontent.com/aleblanc/logui/main/index.json",
+                "flex://defaults"
+            ]
+        }
+    }
+}
+```
+
+**2. Require the package** — the recipe runs on install:
+
 ```bash
-composer require aleblanc/logui
+composer require aleblanc/logui:^0.1
 ```
 
-Register the bundle in `config/bundles.php` (if not auto-registered):
+This auto-registers the bundle, creates `config/routes/log_ui.yaml` + `config/packages/log_ui.yaml`,
+and writes a generated `LOGUI_PASSWORD` to `.env` (a default, like `APP_SECRET`; for production put a
+real secret in `.env.local`, which isn't committed).
 
-```php
-Aleblanc\LogUi\Bridge\Symfony\LogUiBundle::class => ['all' => true],
-```
-
-Mount the UI — `config/routes/log_ui.yaml`:
-
-```yaml
-log_ui:
-    resource: '@LogUiBundle/config/routes.php'
-```
-
-Capture Monolog records — add the handler in `config/packages/monolog.yaml`:
+**3. Capture Monolog** — the only manual step (a recipe can't patch your existing `monolog.yaml`).
+Add the handler under `config/packages/monolog.yaml`:
 
 ```yaml
 monolog:
@@ -66,8 +78,15 @@ monolog:
             id: Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler
 ```
 
-Then open **`/_logui`** (in `dev`/`test`). Note: the bundle's config alias is **`log_ui`**
-(Symfony snake-cases `LogUiBundle`).
+**Open the UI at `/_logui`** — the default path (configurable via `log_ui.ui_path`). It's open in
+`dev`/`test`; in `prod` it's fail-closed behind `LOGUI_PASSWORD` (or delegate to your firewall, see
+[Access control](#access-control-in-production)).
+
+> **Without the recipe** (or before tagging a release), do it by hand: add
+> `Aleblanc\LogUi\Bridge\Symfony\LogUiBundle::class => ['all' => true]` to `config/bundles.php`,
+> create `config/routes/log_ui.yaml` with `resource: '@LogUiBundle/config/routes.php'`, add the
+> Monolog handler above, and set `LOGUI_PASSWORD` yourself. The bundle's config alias is **`log_ui`**.
+> Recipe details & the `symfony/recipes-contrib` path: [`recipes/README.md`](recipes/README.md).
 
 ## Configuration
 
