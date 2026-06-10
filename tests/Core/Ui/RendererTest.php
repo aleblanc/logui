@@ -41,4 +41,16 @@ final class RendererTest extends TestCase
 
         (new Renderer(__DIR__.'/fixtures'))->render('../hello');
     }
+
+    public function test_vars_are_not_shadowed_by_internal_variables(): void
+    {
+        $renderer = new Renderer(__DIR__.'/fixtures');
+
+        // A var named "path" collides with the internal template-path variable.
+        // It must reach the template unchanged, not be silenced by EXTR_SKIP.
+        $html = $renderer->render('echo_path', ['path' => '/var/log/app.log']);
+
+        self::assertStringContainsString('path=/var/log/app.log', $html);
+        self::assertStringNotContainsString('echo_path.php', $html);
+    }
 }

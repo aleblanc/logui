@@ -1,5 +1,6 @@
 <?php
-/** @var string $path */
+/** @var string $ref */
+/** @var string $name */
 /** @var list<array{date:string,channel:string,level:string,message:string,context:?string,extra:?string}> $rows */
 /** @var list<string> $levels */
 /** @var list<string> $channels */
@@ -9,9 +10,9 @@
 /** @var int $total */
 /** @var string $uiPath */
 $base = $uiPath.'/logs/view';
-$qs = function (int $p) use ($path, $filter): string {
+$qs = function (int $p) use ($ref, $filter): string {
     return http_build_query(array_filter([
-        'path' => $path,
+        'ref' => $ref,
         'level' => $filter['level'],
         'channel' => $filter['channel'],
         'q' => $filter['q'],
@@ -33,11 +34,11 @@ $cell = function (string $text) {
 };
 ?>
 <p><a href="<?= $this->escape($uiPath) ?>/logs">← all files</a></p>
-<h2><?= $this->escape(basename($path)) ?></h2>
-<p class="ctx"><?= $this->escape($path) ?> — newest first · <?= $total ?> lines in the read window (tail)</p>
+<h2><?= $this->escape($name) ?></h2>
+<p class="ctx"><?= $this->escape($ref) ?> — newest first · <?= $total ?> lines in the read window (tail)</p>
 
 <form class="filters" method="get" action="<?= $this->escape($base) ?>">
-    <input type="hidden" name="path" value="<?= $this->escape($path) ?>">
+    <input type="hidden" name="ref" value="<?= $this->escape($ref) ?>">
     <select name="level">
         <option value="">all levels</option>
         <?php foreach ($levels as $lvl) { ?>

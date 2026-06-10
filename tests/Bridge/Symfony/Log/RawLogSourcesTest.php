@@ -36,6 +36,47 @@ final class RawLogSourcesTest extends TestCase
         self::assertFalse($sources->knows('/etc/passwd'));
     }
 
+    public function test_ref_is_project_relative_and_resolves_back_to_the_path(): void
+    {
+        $project = sys_get_temp_dir().'/logui-proj-'.uniqid();
+        mkdir($project.'/var/log', 0o777, true);
+        $inside = $project.'/var/log/app.log';
+        touch($inside);
+
+        try {
+            $sources = new RawLogSources(new HandlerPathDiscovery(), [], [$inside], projectDir: $project);
+            $entry = $sources->all()[0];
+
+            // The public ref is the relative path — the absolute prefix never leaks.
+            self::assertSame('var/log/app.log', $entry['ref']);
+            self::assertStringNotContainsString($project, $entry['ref']);
+            // …and it round-trips back to the real path, only via the allow-list.
+            self::assertSame($inside, $sources->resolve('var/log/app.log'));
+            self::assertNull($sources->resolve('var/log/app.log/../../../etc/passwd'));
+            self::assertNull($sources->resolve('nope.log'));
+        } finally {
+            unlink($inside);
+            rmdir($project.'/var/log');
+            rmdir($project.'/var');
+            rmdir($project);
+        }
+    }
+
+    public function test_ref_falls_back_to_basename_outside_the_project(): void
+    {
+        $outside = sys_get_temp_dir().'/logui-ext-'.uniqid().'.log';
+        touch($outside);
+
+        try {
+            $sources = new RawLogSources(new HandlerPathDiscovery(), [], [$outside], projectDir: '/some/project');
+
+            self::assertSame(basename($outside), $sources->all()[0]['ref']);
+            self::assertSame($outside, $sources->resolve(basename($outside)));
+        } finally {
+            unlink($outside);
+        }
+    }
+
     public function test_discovery_can_be_disabled(): void
     {
         $discovered = sys_get_temp_dir().'/logui-rl-off-'.uniqid().'.log';

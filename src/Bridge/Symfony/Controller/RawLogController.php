@@ -40,8 +40,9 @@ final class RawLogController
             return new Response('LogUI: forbidden', 403);
         }
 
-        $path = (string) $request->query->get('path', '');
-        if (!$this->sources->knows($path)) {
+        $ref = $this->str($request, 'ref');
+        $path = $this->sources->resolve($ref);
+        if (null === $path) {
             return new Response('LogUI: unknown log source', 403);
         }
 
@@ -92,7 +93,8 @@ final class RawLogController
         $rows = \array_slice($matched, ($page - 1) * $perPage, $perPage);
 
         return $this->page(basename($path), $this->renderer->render('log_view', [
-            'path' => $path,
+            'ref' => $ref,
+            'name' => basename($path),
             'rows' => $rows,
             'levels' => $levels,
             'channels' => $channels,

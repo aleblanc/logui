@@ -55,7 +55,8 @@ final class RawLogControllerTest extends TestCase
 
     public function test_view_renders_parsed_rows_newest_first(): void
     {
-        $response = $this->controller()->view(Request::create('/_logui/logs/view?path='.rawurlencode($this->file)));
+        $ref = basename($this->file);
+        $response = $this->controller()->view(Request::create('/_logui/logs/view?ref='.rawurlencode($ref)));
 
         $html = (string) $response->getContent();
         self::assertSame(200, $response->getStatusCode());
@@ -65,9 +66,22 @@ final class RawLogControllerTest extends TestCase
         self::assertLessThan(strpos($html, 'Boom'), strpos($html, 'Matched route'));
     }
 
+    public function test_view_never_leaks_the_absolute_path(): void
+    {
+        $html = (string) $this->controller()->view(
+            Request::create('/_logui/logs/view?ref='.rawurlencode(basename($this->file)))
+        )->getContent();
+
+        // The absolute server path must not appear anywhere — not in the heading,
+        // not in the hidden field, not in the pager/filter links.
+        self::assertStringNotContainsString($this->file, $html);
+        self::assertStringNotContainsString(\dirname($this->file), $html);
+        self::assertStringContainsString('name="ref"', $html);
+    }
+
     public function test_view_filters_by_level(): void
     {
-        $response = $this->controller()->view(Request::create('/_logui/logs/view?path='.rawurlencode($this->file).'&level=ERROR'));
+        $response = $this->controller()->view(Request::create('/_logui/logs/view?ref='.rawurlencode(basename($this->file)).'&level=ERROR'));
 
         $html = (string) $response->getContent();
         self::assertStringContainsString('Boom', $html, 'the ERROR line is shown');
@@ -84,21 +98,22 @@ final class RawLogControllerTest extends TestCase
         $lines[] = '[2026-06-10T15:00:00+00:00] app.ERROR: '.str_repeat('X', 600).' []';
         file_put_contents($this->file, implode("\n", $lines)."\n");
 
-        $page1 = (string) $this->controller()->view(Request::create('/_logui/logs/view?path='.rawurlencode($this->file)))->getContent();
+        $ref = basename($this->file);
+        $page1 = (string) $this->controller()->view(Request::create('/_logui/logs/view?ref='.rawurlencode($ref)))->getContent();
         self::assertSame(100, substr_count($page1, 'white-space:nowrap'), 'page 1 shows 100 rows');
         self::assertStringContainsString('page 1 / 2', $page1);
         self::assertStringContainsString('msg-toggle', $page1, 'long message gets a "more" toggle');
         self::assertStringContainsString('msg-full', $page1);
 
-        $page2 = (string) $this->controller()->view(Request::create('/_logui/logs/view?path='.rawurlencode($this->file).'&page=2'))->getContent();
+        $page2 = (string) $this->controller()->view(Request::create('/_logui/logs/view?ref='.rawurlencode($ref).'&page=2'))->getContent();
         self::assertSame(51, substr_count($page2, 'white-space:nowrap'), 'page 2 shows the remaining 51');
     }
 
-    public function test_view_rejects_unknown_path(): void
+    public function test_view_rejects_unknown_ref(): void
     {
-        $response = $this->controller()->view(Request::create('/_logui/logs/view?path=/etc/passwd'));
-
-        self::assertSame(403, $response->getStatusCode());
+        // A ref outside the allow-list — and a traversal attempt — both 403.
+        self::assertSame(403, $this->controller()->view(Request::create('/_logui/logs/view?ref=nope.log'))->getStatusCode());
+        self::assertSame(403, $this->controller()->view(Request::create('/_logui/logs/view?ref='.rawurlencode('../../etc/passwd')))->getStatusCode());
     }
 
     public function test_denied_when_guard_refuses(): void

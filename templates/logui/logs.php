@@ -1,5 +1,5 @@
 <?php
-/** @var list<array{label:string,path:string}> $sources */
+/** @var list<array{label:string,path:string,ref:string}> $sources */
 /** @var string $uiPath */
 ?>
 <h2>Log files</h2>
@@ -11,8 +11,8 @@
     <tbody>
     <?php foreach ($sources as $s) { ?>
         <tr>
-            <td><a href="<?= $this->escape($uiPath) ?>/logs/view?path=<?= $this->escape(rawurlencode($s['path'])) ?>"><?= $this->escape($s['label']) ?></a></td>
-            <td class="ctx"><?= $this->escape($s['path']) ?></td>
+            <td><a href="<?= $this->escape($uiPath) ?>/logs/view?ref=<?= $this->escape(rawurlencode($s['ref'])) ?>"><?= $this->escape($s['label']) ?></a></td>
+            <td class="ctx"><?= $this->escape($s['ref']) ?></td>
         </tr>
     <?php } ?>
     </tbody>

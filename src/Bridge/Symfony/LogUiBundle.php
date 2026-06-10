@@ -120,7 +120,7 @@ final class LogUiBundle extends AbstractBundle
         $services->set('logui.discovery', HandlerPathDiscovery::class);
         $services->set('logui.plainreader', PlainLogReader::class);
         $services->set('logui.rawlog_sources', RawLogSources::class)
-            ->args([new Reference('logui.discovery'), [new Reference('logger')], $config['external_logs'], $config['log_dirs'], $config['discover_monolog']]);
+            ->args([new Reference('logui.discovery'), [new Reference('logger')], $config['external_logs'], $config['log_dirs'], $config['discover_monolog'], '%kernel.project_dir%']);
         $services->set(RawLogController::class)
             ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('logui.renderer'), new Reference('logui.guard'), $config['ui_path']])
             ->public()

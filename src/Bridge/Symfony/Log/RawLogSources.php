@@ -24,10 +24,11 @@ final class RawLogSources
         private readonly array $configuredPaths,
         private readonly array $logDirs = [],
         private readonly bool $discoverMonolog = true,
+        private readonly string $projectDir = '',
     ) {
     }
 
-    /** @return list<array{label:string,path:string}> */
+    /** @return list<array{label:string,path:string,ref:string}> */
     public function all(): array
     {
         $byPath = [];
@@ -56,7 +57,32 @@ final class RawLogSources
             }
         }
 
-        return array_values($byPath);
+        // Tag each source with a public reference — the project-relative path (or the
+        // bare filename for files outside the project). This is what the UI puts in URLs,
+        // so the absolute server path (username, OS, layout) never leaves the server.
+        $out = [];
+        foreach (array_values($byPath) as $entry) {
+            $entry['ref'] = $this->ref($entry['path']);
+            $out[] = $entry;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Resolve a public reference (see all()['ref']) back to the real absolute path,
+     * matching only against the allow-list — an unknown ref returns null. The path is
+     * never reconstructed from user input, so directory traversal is impossible.
+     */
+    public function resolve(string $ref): ?string
+    {
+        foreach ($this->all() as $entry) {
+            if ($entry['ref'] === $ref) {
+                return $entry['path'];
+            }
+        }
+
+        return null;
     }
 
     public function knows(string $path): bool
@@ -68,5 +94,14 @@ final class RawLogSources
         }
 
         return false;
+    }
+
+    private function ref(string $path): string
+    {
+        if ('' !== $this->projectDir && str_starts_with($path, $this->projectDir.'/')) {
+            return substr($path, \strlen($this->projectDir) + 1);
+        }
+
+        return basename($path);
     }
 }
