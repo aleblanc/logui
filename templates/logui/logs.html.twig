@@ -1,0 +1,20 @@
+{% extends '@LogUi/logui/layout.html.twig' %}
+
+{% block content %}
+<h2>Log files</h2>
+{% if sources is empty %}
+    <p class="ctx">No log files discovered. Configure <code>log_ui.external_logs</code> or enable <code>discover_monolog</code>.</p>
+{% else %}
+<table>
+    <thead><tr><th>Source</th><th>Path</th></tr></thead>
+    <tbody>
+    {% for s in sources %}
+        <tr>
+            <td><a href="{{ ui_path }}/logs/view?ref={{ s.ref|url_encode }}">{{ s.label }}</a></td>
+            <td class="ctx">{{ s.ref }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

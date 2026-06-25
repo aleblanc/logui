@@ -9,9 +9,10 @@ use Aleblanc\LogUi\Bridge\Symfony\Log\RawLogSources;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\HandlerPathDiscovery;
 use Aleblanc\LogUi\Bridge\Symfony\Security\UiAccessGuard;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
-use Aleblanc\LogUi\Core\Ui\Renderer;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
+use Twig\Environment;
+use Twig\Loader\FilesystemLoader;
 
 final class RawLogControllerTest extends TestCase
 {
@@ -39,10 +40,18 @@ final class RawLogControllerTest extends TestCase
         return new RawLogController(
             $sources,
             new PlainLogReader(),
-            new Renderer(\dirname(__DIR__, 4).'/templates/logui'),
+            self::twig(),
             new UiAccessGuard($env, null),
             '/_logui',
         );
+    }
+
+    private static function twig(): Environment
+    {
+        $loader = new FilesystemLoader();
+        $loader->addPath(\dirname(__DIR__, 4).'/templates', 'LogUi');
+
+        return new Environment($loader);
     }
 
     public function test_list_renders_source(): void
@@ -64,6 +73,23 @@ final class RawLogControllerTest extends TestCase
         self::assertStringContainsString('Matched route', $html);
         // newest first: the INFO (later timestamp) row appears before the ERROR row
         self::assertLessThan(strpos($html, 'Boom'), strpos($html, 'Matched route'));
+    }
+
+    public function test_view_excludes_logui_telemetry_lines(): void
+    {
+        // A LogUI telemetry line (LOGUI@{json}) written into the same file must not show here.
+        file_put_contents(
+            $this->file,
+            '[2026-06-10T14:03:13+00:00] app.INFO: LOGUI@{"id":"abc","label":"GET /x","records":[]} []'."\n"
+            .'[2026-06-10T14:03:14+00:00] app.INFO: A real message {"k":1} []'."\n",
+        );
+
+        $html = (string) $this->controller()->view(
+            Request::create('/_logui/logs/view?ref='.rawurlencode(basename($this->file)))
+        )->getContent();
+
+        self::assertStringNotContainsString('LOGUI@', $html);
+        self::assertStringContainsString('A real message', $html);
     }
 
     public function test_view_never_leaks_the_absolute_path(): void

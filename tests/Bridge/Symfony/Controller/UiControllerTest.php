@@ -11,9 +11,10 @@ use Aleblanc\LogUi\Core\Model\Profile;
 use Aleblanc\LogUi\Core\Model\ProfileType;
 use Aleblanc\LogUi\Core\Model\QueryStats;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
-use Aleblanc\LogUi\Core\Ui\Renderer;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
+use Twig\Environment;
+use Twig\Loader\FilesystemLoader;
 
 final class UiControllerTest extends TestCase
 {
@@ -48,10 +49,18 @@ final class UiControllerTest extends TestCase
         return new UiController(
             new TelemetryReader(),
             $this->file,
-            new Renderer(\dirname(__DIR__, 4).'/templates/logui'),
+            self::twig(),
             new UiAccessGuard($env, $password),
             '/_logui',
         );
+    }
+
+    private static function twig(): Environment
+    {
+        $loader = new FilesystemLoader();
+        $loader->addPath(\dirname(__DIR__, 4).'/templates', 'LogUi');
+
+        return new Environment($loader);
     }
 
     private function profile(string $id, string $label, string $level, ?string $method = 'GET'): Profile

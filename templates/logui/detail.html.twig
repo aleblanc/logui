@@ -1,0 +1,99 @@
+{% extends '@LogUi/logui/layout.html.twig' %}
+
+{% block content %}
+{% set mem = (profile.memStartMb is not null and profile.memEndMb is not null)
+    ? profile.memStartMb|number_format(1) ~ '→' ~ profile.memEndMb|number_format(1) ~ ' MB (peak ' ~ profile.memPeakMb|number_format(1) ~ ')'
+    : profile.memPeakMb|number_format(1) ~ ' MB peak' %}
+<p><a href="{{ ui_path }}">← back</a></p>
+<h2>{{ profile.label }}</h2>
+<p class="ctx">
+    {{ profile.type.value }}
+    {{ profile.method is not null ? '· ' ~ profile.method ~ ' ' }}·
+    status {{ profile.status is null ? '—' : profile.status }} ·
+    {{ profile.durationMs|number_format(1) }} ms ·
+    {{ mem }} ·
+    {{ profile.at|date('c') }}
+</p>
+
+<h3>SQL queries ({{ profile.queries.count }})</h3>
+{% if profile.queries.slow is empty %}
+    <p class="ctx">{{ profile.queries.count == 0 ? 'No queries recorded.' : 'No slow queries.' }}</p>
+{% else %}
+    <p class="ctx">{{ profile.queries.slow|length }} slow:</p>
+    <table>
+        <thead><tr><th class="num">ms</th><th>SQL</th></tr></thead>
+        <tbody>
+        {% for qy in profile.queries.slow %}
+            <tr><td class="num">{{ qy.ms|number_format(1) }}</td><td>{{ qy.sql }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+{% endif %}
+
+{% if profile.exception is not null %}
+    <h3>Exception</h3>
+    <pre>{{ profile.exception.class }}: {{ profile.exception.message }}
+
+{{ profile.exception.trace }}</pre>
+{% endif %}
+
+<p class="ctx" style="margin-top:24px">
+    Niveaux : {% for lvl, n in profile.levels %}<span class="badge lvl-{{ lvl }}">{{ lvl }} {{ n }}</span> {% endfor %}{{ profile.levels is empty ? '—' }}
+</p>
+
+<h3>Log records ({{ profile.records|length }}){{ profile.truncated ? ' ⚠️ tronqué' }}</h3>
+{% if profile.records is empty %}
+    <p class="ctx">Aucun enregistrement capturé pour cette requête.</p>
+{% else %}
+{% set levelsSet = {} %}
+{% set channelsSet = {} %}
+{% for r in profile.records %}
+    {% set levelsSet = levelsSet|merge({(r.level): true}) %}
+    {% set channelsSet = channelsSet|merge({(r.channel): true}) %}
+{% endfor %}
+<form class="filters">
+    <select id="rec-level">
+        <option value="">all levels</option>
+        {% for lvl in levelsSet|keys|sort %}<option value="{{ lvl }}">{{ lvl }}</option>{% endfor %}
+    </select>
+    <select id="rec-channel">
+        <option value="">all channels</option>
+        {% for ch in channelsSet|keys|sort %}<option value="{{ ch }}">{{ ch }}</option>{% endfor %}
+    </select>
+    <span class="ctx" id="rec-count"></span>
+</form>
+<table id="logui-records">
+    <thead><tr><th class="num">+ms</th><th>Level</th><th>Channel</th><th>Message</th></tr></thead>
+    <tbody>
+    {% for r in profile.records %}
+        <tr data-lvl="{{ r.level }}" data-ch="{{ r.channel }}">
+            <td class="num">{{ r.t|number_format(1) }}</td>
+            <td><span class="badge lvl-{{ r.level }}">{{ r.level }}</span></td>
+            <td class="ctx">{{ r.channel }}</td>
+            <td><span class="logmsg-raw">{{ r.message }}</span>{% if r.context %}<br><span class="ctx logmsg-raw">{{ r.context|json_encode }}</span>{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+<script>
+    (function () {
+        var lvl = document.getElementById('rec-level'),
+            ch = document.getElementById('rec-channel'),
+            count = document.getElementById('rec-count'),
+            rows = [].slice.call(document.querySelectorAll('#logui-records tbody tr'));
+        function apply() {
+            var L = lvl.value, C = ch.value, shown = 0;
+            rows.forEach(function (r) {
+                var ok = (L === '' || r.getAttribute('data-lvl') === L) && (C === '' || r.getAttribute('data-ch') === C);
+                r.style.display = ok ? '' : 'none';
+                if (ok) { shown++; }
+            });
+            count.textContent = shown + ' / ' + rows.length;
+        }
+        lvl.addEventListener('change', apply);
+        ch.addEventListener('change', apply);
+        apply();
+    })();
+</script>
+{% endif %}
+{% endblock %}

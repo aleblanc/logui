@@ -7,8 +7,11 @@ namespace Aleblanc\LogUi\Bridge\Symfony;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CommandProfilerListener;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CurrentProfile;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\RequestProfilerListener;
+use Aleblanc\LogUi\Bridge\Symfony\Controller\HealthController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\RawLogController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\UiController;
+use Aleblanc\LogUi\Bridge\Symfony\Health\SystemHealthService;
+use Aleblanc\LogUi\Bridge\Symfony\Health\VnstatService;
 use Aleblanc\LogUi\Bridge\Symfony\Log\RawLogSources;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\HandlerPathDiscovery;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler;
@@ -21,7 +24,6 @@ use Aleblanc\LogUi\Core\Stats\MemoryProbe;
 use Aleblanc\LogUi\Core\Stats\SystemClock;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
-use Aleblanc\LogUi\Core\Ui\Renderer;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
@@ -109,6 +111,11 @@ final class LogUiBundle extends AbstractBundle
                     ->scalarPrototype()->end()
                     ->defaultValue(['password', 'passwd', 'secret', 'token', 'authorization', 'api_key'])
                 ->end()
+                ->arrayNode('health_services')
+                    ->scalarPrototype()->end()
+                    ->defaultValue([])
+                    ->info('systemd units shown on the Health tab via `systemctl is-active` (empty = no services section).')
+                ->end()
             ->end();
     }
 
@@ -131,7 +138,6 @@ final class LogUiBundle extends AbstractBundle
         // Telemetry is appended directly to its own file (bypasses host Monolog routing) and read back from it.
         $services->set('logui.telemetry', TelemetryLogger::class)->args([$config['telemetry_file']]);
         $services->set('logui.telemetry_reader', TelemetryReader::class);
-        $services->set('logui.renderer', Renderer::class)->args([\dirname(__DIR__, 3).'/templates/logui']);
 
         $services->set('logui.current', CurrentProfile::class);
 
@@ -158,7 +164,7 @@ final class LogUiBundle extends AbstractBundle
             ->tag('kernel.event_subscriber');
 
         $services->set(UiController::class)
-            ->args([new Reference('logui.telemetry_reader'), $config['telemetry_file'], new Reference('logui.renderer'), new Reference('logui.guard'), $config['ui_path']])
+            ->args([new Reference('logui.telemetry_reader'), $config['telemetry_file'], new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
             ->public()
             ->tag('controller.service_arguments');
 
@@ -168,7 +174,16 @@ final class LogUiBundle extends AbstractBundle
         $services->set('logui.rawlog_sources', RawLogSources::class)
             ->args([new Reference('logui.discovery'), [new Reference('logger')], $config['external_logs'], $config['log_dirs'], $config['discover_monolog'], '%kernel.project_dir%']);
         $services->set(RawLogController::class)
-            ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('logui.renderer'), new Reference('logui.guard'), $config['ui_path']])
+            ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
+            ->public()
+            ->tag('controller.service_arguments');
+
+        // Health tab: read-only host metrics (degrade gracefully when a probe is unavailable).
+        $services->set('logui.vnstat', VnstatService::class);
+        $services->set('logui.health', SystemHealthService::class)
+            ->args([$config['health_services'], new Reference('logui.vnstat')]);
+        $services->set(HealthController::class)
+            ->args([new Reference('logui.health'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
             ->public()
             ->tag('controller.service_arguments');
 

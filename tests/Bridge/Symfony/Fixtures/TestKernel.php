@@ -9,6 +9,7 @@ use Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
 use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
 use Symfony\Bundle\MonologBundle\MonologBundle;
+use Symfony\Bundle\TwigBundle\TwigBundle;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Component\Routing\Loader\Configurator\RoutingConfigurator;
@@ -32,7 +33,7 @@ final class TestKernel extends Kernel
 
     public function registerBundles(): iterable
     {
-        return [new FrameworkBundle(), new MonologBundle(), new LogUiBundle()];
+        return [new FrameworkBundle(), new MonologBundle(), new TwigBundle(), new LogUiBundle()];
     }
 
     protected function configureContainer(ContainerConfigurator $container): void
@@ -45,6 +46,7 @@ final class TestKernel extends Kernel
             'php_errors' => ['log' => true],
             'router' => ['utf8' => true],
         ]);
+        $container->extension('twig', ['default_path' => $this->varDir.'/templates']);
         $handlers = ['main' => ['type' => 'stream', 'path' => $this->varDir.'/log/app.log', 'level' => 'debug']];
         if ($this->manualLoguiHandler) {
             $handlers['logui'] = ['type' => 'service', 'id' => LogUiHandler::class];

@@ -1,0 +1,50 @@
+{% extends '@LogUi/logui/layout.html.twig' %}
+
+{% block content %}
+{% set base = ui_path ~ '/logs/view' %}
+<p><a href="{{ ui_path }}/logs">← all files</a></p>
+<h2>{{ name }}</h2>
+<p class="ctx">{{ ref }} — newest first · {{ total }} lines in the read window (tail)</p>
+
+<form class="filters" method="get" action="{{ base }}">
+    <input type="hidden" name="ref" value="{{ ref }}">
+    <select name="level">
+        <option value="">all levels</option>
+        {% for lvl in levels %}
+            <option value="{{ lvl }}"{{ lvl == filter.level ? ' selected' }}>{{ lvl }}</option>
+        {% endfor %}
+    </select>
+    <select name="channel">
+        <option value="">all channels</option>
+        {% for ch in channels %}
+            <option value="{{ ch }}"{{ ch == filter.channel ? ' selected' }}>{{ ch }}</option>
+        {% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ filter.q }}" placeholder="search message…">
+    <button type="submit">Filter</button>
+</form>
+
+{% if rows is empty %}
+    <p class="ctx">No matching lines.</p>
+{% else %}
+<table>
+    <thead><tr><th>Time</th><th>Channel</th><th>Level</th><th>Message</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+        <tr>
+            <td class="ctx" style="white-space:nowrap">{{ r.date }}</td>
+            <td class="ctx">{{ r.channel }}</td>
+            <td>{% if r.level != '' %}<span class="badge lvl-{{ r.level|lower }}">{{ r.level }}</span>{% endif %}</td>
+            <td><span class="logmsg-raw">{{ r.message }}</span>{% if r.context is not null and r.context != '[]' %}<br><span class="ctx logmsg-raw">{{ r.context }}</span>{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="pager">
+    {% if page > 1 %}<a href="{{ base }}?{{ {ref: ref, level: filter.level, channel: filter.channel, q: filter.q, page: page - 1}|filter(v => v != '' and v is not null)|url_encode }}">← prev</a>{% else %}<span class="ctx">← prev</span>{% endif %}
+    <span class="ctx">page {{ page }} / {{ pages }} · {{ total }} lines</span>
+    {% if page < pages %}<a href="{{ base }}?{{ {ref: ref, level: filter.level, channel: filter.channel, q: filter.q, page: page + 1}|filter(v => v != '' and v is not null)|url_encode }}">next →</a>{% else %}<span class="ctx">next →</span>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

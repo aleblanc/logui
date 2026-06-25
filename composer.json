@@ -13,7 +13,8 @@
         "symfony/event-dispatcher": "^6.4|^7.0|^8.0",
         "symfony/http-foundation": "^6.4|^7.0|^8.0",
         "symfony/http-kernel": "^6.4|^7.0|^8.0",
-        "symfony/routing": "^6.4|^7.0|^8.0"
+        "symfony/routing": "^6.4|^7.0|^8.0",
+        "symfony/twig-bundle": "^6.4|^7.0|^8.0"
     },
     "suggest": {
         "doctrine/dbal": "Enables automatic SQL query counting + slow-query detection per request/command (^3.7|^4.0)."

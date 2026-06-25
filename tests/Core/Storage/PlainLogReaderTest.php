@@ -86,6 +86,122 @@ final class PlainLogReaderTest extends TestCase
         self::assertSame([], iterator_to_array((new PlainLogReader())->read('/no/such/file.log')));
     }
 
+    public function test_parses_symfony_console_handler_lines(): void
+    {
+        file_put_contents(
+            $this->file,
+            '21:00:17 WARNING   [weather] WeatherService refresh [metz]: Idle timeout reached for "https://api.open-meteo.com/v1/forecast?x=1".'."\n"
+            .'21:00:18 INFO      [app] all good'."\n"
+            .' ----------- -------- '."\n"          // a console table border …
+            .'  metz        ERREUR  '."\n"          // … and a table row → stay raw, not misparsed
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertSame('21:00:17', $rows[0]['date']);
+        self::assertSame('weather', $rows[0]['channel'], 'channel is the first [..], not the [metz] inside the message');
+        self::assertSame('warning', $rows[0]['level']);
+        self::assertStringContainsString('Idle timeout reached', $rows[0]['message']);
+
+        self::assertSame('app', $rows[1]['channel']);
+        self::assertSame('info', $rows[1]['level']);
+
+        // Table decoration is not a log record → kept raw, no level (so it's not coloured/filtered as one).
+        self::assertSame('', $rows[2]['level']);
+        self::assertSame('', $rows[3]['level']);
+    }
+
+    public function test_parses_monolog_json_formatter_lines(): void
+    {
+        file_put_contents(
+            $this->file,
+            '{"message":"Schedule run end","context":{"minute":"2026-06-01 23:45","count":3},"level":200,"level_name":"INFO","channel":"cron_scheduler","datetime":"2026-06-01T23:45:23.994250+02:00","extra":{}}'."\n"
+            .'{"message":"Idle timeout reached","context":{},"level":300,"level_name":"WARNING","channel":"weather","datetime":"2026-06-01T23:50:12.998633+02:00","extra":{}}'."\n"
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertCount(2, $rows);
+        self::assertSame('cron_scheduler', $rows[0]['channel']);
+        self::assertSame('info', $rows[0]['level']);
+        self::assertSame('Schedule run end', $rows[0]['message']);
+        self::assertSame('2026-06-01T23:45:23.994250+02:00', $rows[0]['date']);
+        self::assertSame('{"minute":"2026-06-01 23:45","count":3}', $rows[0]['context'], 'context is re-encoded compactly');
+
+        self::assertSame('weather', $rows[1]['channel']);
+        self::assertSame('warning', $rows[1]['level']);
+        self::assertNull($rows[1]['context'], 'empty context {} becomes null (not shown)');
+    }
+
+    public function test_parses_logstash_formatter_lines(): void
+    {
+        // LogstashFormatter: date is @timestamp, level is the name under "level", no "level_name".
+        file_put_contents(
+            $this->file,
+            '{"@timestamp":"2026-06-01T23:45:23.994250+02:00","@version":1,"host":"h","message":"run end","type":"cron","channel":"cron_scheduler","level":"WARNING","monolog_level":300,"extra":{"x":1},"context":{"count":3}}'."\n"
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertSame('cron_scheduler', $rows[0]['channel']);
+        self::assertSame('warning', $rows[0]['level'], 'level resolved from the "level" name field');
+        self::assertSame('2026-06-01T23:45:23.994250+02:00', $rows[0]['date'], 'date resolved from @timestamp');
+        self::assertSame('{"count":3}', $rows[0]['context']);
+    }
+
+    public function test_parses_google_cloud_logging_formatter_lines(): void
+    {
+        // GoogleCloudLoggingFormatter: level under "severity", date under "time", no level_name/datetime.
+        file_put_contents(
+            $this->file,
+            '{"message":"boot","channel":"app","severity":"ERROR","time":"2026-06-01T23:45:23.994250Z","context":{},"extra":{}}'."\n"
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertSame('app', $rows[0]['channel']);
+        self::assertSame('error', $rows[0]['level'], 'level resolved from "severity"');
+        self::assertSame('2026-06-01T23:45:23.994250Z', $rows[0]['date'], 'date resolved from "time"');
+    }
+
+    public function test_parses_numeric_only_json_level(): void
+    {
+        file_put_contents(
+            $this->file,
+            '{"message":"x","channel":"app","level":400,"datetime":"2026-06-01T00:00:00+00:00","context":{},"extra":{}}'."\n"
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertSame('error', $rows[0]['level'], 'numeric level 400 → error');
+    }
+
+    public function test_non_log_json_falls_through_to_raw(): void
+    {
+        // A JSON line that isn't a Monolog record must stay raw, not be mis-parsed.
+        file_put_contents($this->file, '{"foo":"bar","baz":1}'."\n");
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertCount(1, $rows);
+        self::assertSame('', $rows[0]['level']);
+        self::assertSame('{"foo":"bar","baz":1}', $rows[0]['message']);
+    }
+
+    public function test_strips_ansi_colour_escapes(): void
+    {
+        file_put_contents(
+            $this->file,
+            "21:00:17 \e[33mWARNING\e[39m   [weather] \e[32mtimeout\e[39m".PHP_EOL,
+        );
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file));
+
+        self::assertSame('warning', $rows[0]['level']);
+        self::assertSame('weather', $rows[0]['channel']);
+        self::assertSame('timeout', $rows[0]['message'], 'colour codes are removed from the message');
+    }
+
     public function test_parses_nginx_access_lines(): void
     {
         file_put_contents(

@@ -10,16 +10,16 @@ use Aleblanc\LogUi\Core\Query\ProfileFilter;
 use Aleblanc\LogUi\Core\Query\ProfileSorter;
 use Aleblanc\LogUi\Core\Query\ProfileSummary;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
-use Aleblanc\LogUi\Core\Ui\Renderer;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Twig\Environment;
 
 final class UiController
 {
     public function __construct(
         private readonly TelemetryReader $reader,
         private readonly string $telemetryFile,
-        private readonly Renderer $renderer,
+        private readonly Environment $twig,
         private readonly UiAccessGuard $guard,
         private readonly string $uiPath,
     ) {
@@ -28,7 +28,7 @@ final class UiController
     public function list(Request $request): Response
     {
         if (!$this->guard->authorize($request)) {
-            return new Response('LogUI: forbidden', 403);
+            return $this->error('Forbidden', 403);
         }
 
         $level = $this->str($request, 'level');
@@ -56,35 +56,29 @@ final class UiController
         $page = max(1, min($pages, (int) $this->str($request, 'page')));
         $pageProfiles = \array_slice($matched, ($page - 1) * $perPage, $perPage);
 
-        $body = $this->renderer->render('list', [
+        return $this->render('list', 'Requests', [
             'profiles' => $pageProfiles,
             'summary' => $summary,
             'filter' => ['level' => $level, 'type' => $type, 'q' => $q, 'method' => $method],
-            'uiPath' => $this->uiPath,
             'page' => $page,
             'pages' => $pages,
             'total' => $total,
         ]);
-
-        return $this->page('Requests', $body);
     }
 
     public function detail(string $id, Request $request): Response
     {
         if (!$this->guard->authorize($request)) {
-            return new Response('LogUI: forbidden', 403);
+            return $this->error('Forbidden', 403);
         }
 
         foreach ($this->reader->read($this->telemetryFile) as $profile) {
             if ($profile->id === $id) {
-                return $this->page($profile->label, $this->renderer->render('detail', [
-                    'profile' => $profile,
-                    'uiPath' => $this->uiPath,
-                ]));
+                return $this->render('detail', $profile->label, ['profile' => $profile]);
             }
         }
 
-        return new Response('LogUI: profile not found', 404);
+        return $this->error('Profile not found', 404);
     }
 
     private function str(Request $request, string $key): string
@@ -94,8 +88,18 @@ final class UiController
         return \is_string($value) ? $value : '';
     }
 
-    private function page(string $title, string $content): Response
+    /** @param array<string,mixed> $vars */
+    private function render(string $template, string $title, array $vars, int $status = 200): Response
     {
-        return new Response($this->renderer->render('layout', ['title' => $title, 'content' => $content, 'uiPath' => $this->uiPath]));
+        return new Response($this->twig->render('@LogUi/logui/'.$template.'.html.twig', [
+            'title' => $title,
+            'ui_path' => $this->uiPath,
+            ...$vars,
+        ]), $status);
+    }
+
+    private function error(string $message, int $status): Response
+    {
+        return $this->render('error', 'Error', ['message' => $message, 'status' => $status], $status);
     }
 }

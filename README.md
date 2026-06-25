@@ -24,14 +24,17 @@ reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 - Pure-PHP stats (`memory_get_usage`/`peak` + a Doctrine middleware) — **no PHP extension required**.
 - **Telemetry appended to a log file** (`LOGUI@` sentinel), read back by the UI — no database. Written **directly** (not through Monolog), so it works in prod regardless of `fingers_crossed`/`rotating_file` handlers. Reads are **tail-bounded** (multi-GB logs are fine).
 - **Request detail** shows that request's log records (all channels, even ones your file handlers drop), filterable by level/channel.
-- **Raw `.log` viewer** (Files tab): multi-format parser + auto-discovery of Monolog handler files + a scan of your log directories.
+- **Raw `.log` viewer** (Files tab): multi-format parser (Monolog line **and JSON** formatters, Symfony console logs, nginx access/error, ANSI-stripped) + auto-discovery of Monolog handler files + a scan of your log directories.
+- **JSON-aware messages**: a message that is *text followed by JSON* is detected and the JSON is **pretty-printed, syntax-highlighted and collapsed to ~2 lines** with an expand/collapse toggle (client-side, in both the request detail records and the raw log viewer).
 - **Dashboard UI**: clickable stats (general counts), method column, filters (level/type/method/search), pagination (100/page), and **dark / light / sepia** themes.
+- **Health tab** *(read-only host metrics)*: uptime, load, memory, disks, network interfaces, **top processes** (`ps`), optional CPU temperature/throttle (Raspberry Pi), `vnstat` bandwidth, Docker containers and configured systemd services. Every probe **degrades gracefully** — anything unavailable on the host is simply not shown.
 - **Security**: open in `dev`/`test`; in production it is **fail-closed** (password, or delegated to your firewall). Sensitive context keys are **redacted** before writing.
 
 ## Requirements
 
 - PHP **8.2+**
 - Symfony **6.4 / 7.x / 8.x** (HttpKernel, Console, HttpFoundation, Config, DependencyInjection, Routing, EventDispatcher)
+- **TwigBundle** (the UI is rendered with Twig) — pulled in automatically
 - Monolog **3**
 - *(optional)* `doctrine/dbal` ^3.7|^4.0 — enables SQL query counting
 
@@ -99,6 +102,7 @@ log_ui:
     log_dirs: ['%kernel.logs_dir%']    # directories scanned for *.log (Files tab)
     external_logs: []                  # extra .log files to expose (outside the dirs above)
     redact_keys: [password, passwd, secret, token, authorization, api_key]
+    health_services: []                # systemd units shown on the Health tab (e.g. [nginx, mariadb, php8.4-fpm])
 ```
 
 ### Access control in production
@@ -140,9 +144,9 @@ exceptions by the kernel exception event, then finalized on `kernel.terminate`, 
 single `LOGUI@{json}` line directly to `telemetry_file`** (not through Monolog — so it's immune to
 `fingers_crossed` buffering and `rotating_file` naming, which otherwise swallow telemetry in prod).
 Console commands are handled symmetrically via `ConsoleEvents`. The UI reads those lines back
-(`TelemetryReader`, tail-bounded) and renders the dashboard with Core's filtering/sorting and a
-dependency-free PHP template renderer. SQL counting is a DBAL middleware, registered only when
-Doctrine DBAL is installed.
+(`TelemetryReader`, tail-bounded) and renders the dashboard with Core's filtering/sorting and
+**Twig templates** (under `templates/logui/`, exposed as `@LogUi`). SQL counting is a DBAL middleware,
+registered only when Doctrine DBAL is installed.
 
 The telemetry file is a normal append-only log. Reads are tail-bounded, but the file itself grows
 over time — **rotate it like any log** (logrotate, or point `telemetry_file` at a path your existing
@@ -152,12 +156,27 @@ rotation already covers).
 
 A single package, layered: `Aleblanc\LogUi\Core\*` (framework-agnostic — zero Symfony/Monolog/Doctrine
 imports, enforced by a custom PHPStan rule) and `Aleblanc\LogUi\Bridge\Symfony\*` (the bundle wiring).
-This keeps extraction of a future `logui-laravel` adapter straightforward.
+The capture/storage/query Core stays framework-agnostic; the **UI is Symfony + Twig only for now** — a
+future `logui-laravel` adapter would reuse the Core and ship its own (Blade) views.
 
 ## Roadmap
 
 - Laravel adapter (the Core is already framework-agnostic).
 - Publication on Packagist.
+
+### Ideas under consideration
+
+- **Pulse-style stats dashboard** (à la Laravel Pulse): aggregated cards over the telemetry —
+  slowest requests/commands, busiest endpoints, error/exception rates, SQL hotspots, RAM peaks —
+  computed from the existing `LOGUI@` lines, no new store.
+- **Server health & system stats**: lightweight host metrics next to app telemetry —
+  CPU/load, RAM, disk usage/inodes, uptime — read from `/proc` (or `sys_getloadavg()`), no agent.
+- **Network usage via vnstat**: parse `vnstat --json` to show daily/monthly bandwidth per interface.
+- **GoAccess integration**: surface a GoAccess HTML/JSON report from the parsed access logs
+  (the Files tab already discovers nginx access/error logs) for top URLs, visitors, status codes.
+- **MCP server**: expose LogUI telemetry to AI agents over the Model Context Protocol
+  (query requests/commands/logs, fetch a profile, summarize errors) — read-only, reusing
+  `TelemetryReader`.
 
 ## Development
 

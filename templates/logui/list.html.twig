@@ -1,0 +1,63 @@
+{% extends '@LogUi/logui/layout.html.twig' %}
+
+{% block content %}
+<div class="stats">
+    <a class="stat{{ filter.level == '' and filter.type == '' ? ' active' }}" href="{{ ui_path }}"><b>{{ summary.total }}</b> profils</a>
+    <a class="stat{{ filter.type == 'http' ? ' active' }}" href="{{ ui_path }}?type=http">🌐 <b>{{ summary.http }}</b> requêtes</a>
+    <a class="stat{{ filter.type == 'cli' ? ' active' }}" href="{{ ui_path }}?type=cli"><span class="glyph-cli">$_</span> <b>{{ summary.cli }}</b> commandes</a>
+    <a class="stat sev-critical{{ filter.level == 'critical' ? ' active' }}" href="{{ ui_path }}?level=critical"><b>{{ summary.critical }}</b> critical</a>
+    <a class="stat sev-error{{ filter.level == 'error' ? ' active' }}" href="{{ ui_path }}?level=error"><b>{{ summary.error }}</b> error</a>
+    <a class="stat sev-warning{{ filter.level == 'warning' ? ' active' }}" href="{{ ui_path }}?level=warning"><b>{{ summary.warning }}</b> warning</a>
+</div>
+
+<form class="filters" method="get" action="{{ ui_path }}">
+    <select name="level">
+        <option value="">all levels</option>
+        {% for lvl in ['critical', 'error', 'warning', 'notice', 'info', 'debug'] %}
+            <option value="{{ lvl }}"{{ lvl == filter.level ? ' selected' }}>{{ lvl }}</option>
+        {% endfor %}
+    </select>
+    <select name="type">
+        <option value="">all</option>
+        <option value="http"{{ filter.type == 'http' ? ' selected' }}>http</option>
+        <option value="cli"{{ filter.type == 'cli' ? ' selected' }}>cli</option>
+    </select>
+    <select name="method">
+        <option value="">all methods</option>
+        {% for mth in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] %}
+            <option value="{{ mth }}"{{ mth == filter.method ? ' selected' }}>{{ mth }}</option>
+        {% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ filter.q }}" placeholder="search…">
+    <button type="submit">Filter</button>
+</form>
+
+{% if profiles is empty %}
+    <p class="ctx">No profiles captured yet.</p>
+{% else %}
+<table>
+    <thead><tr><th>Time</th><th>Type</th><th>Method</th><th>Label</th><th>Status</th><th class="num">ms</th><th class="num">MB</th><th class="num">SQL</th><th>Levels</th></tr></thead>
+    <tbody>
+    {% for p in profiles %}
+        <tr>
+            <td class="ctx">{{ p.at|date('m-d H:i:s') }}</td>
+            <td>{% if p.type.value == 'http' %}🌐{% else %}<span class="glyph-cli">$_</span>{% endif %}</td>
+            <td>{% if p.method is not null %}<a class="badge" href="{{ ui_path }}?method={{ p.method|url_encode }}">{{ p.method }}</a>{% else %}<span class="ctx">—</span>{% endif %}</td>
+            <td><a href="{{ ui_path }}/{{ p.id }}">{{ p.label }}</a></td>
+            <td class="num">{{ p.status is null ? '—' : p.status }}</td>
+            <td class="num">{{ p.durationMs|number_format(1) }}</td>
+            <td class="num">{{ p.memPeakMb|number_format(1) }}</td>
+            <td class="num">{{ p.queries.count }}{{ p.queries.slow ? ' ⚠' }}</td>
+            <td>{% for lvl, n in p.levels %}<span class="badge lvl-{{ lvl }}">{{ lvl }} {{ n }}</span> {% endfor %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<div class="pager">
+    {% if page > 1 %}<a href="{{ ui_path }}?{{ {level: filter.level, type: filter.type, method: filter.method, q: filter.q, page: page - 1}|filter(v => v != '' and v is not null)|url_encode }}">← prev</a>{% else %}<span class="ctx">← prev</span>{% endif %}
+    <span class="ctx">page {{ page }} / {{ pages }} · {{ total }} profils</span>
+    {% if page < pages %}<a href="{{ ui_path }}?{{ {level: filter.level, type: filter.type, method: filter.method, q: filter.q, page: page + 1}|filter(v => v != '' and v is not null)|url_encode }}">next →</a>{% else %}<span class="ctx">next →</span>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
