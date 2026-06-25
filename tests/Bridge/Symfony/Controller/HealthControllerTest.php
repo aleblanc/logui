@@ -46,6 +46,7 @@ final class HealthControllerTest extends TestCase
             'load' => ['1m' => 0.5, '5m' => 0.4, '15m' => 0.3, 'cpu_count' => 4, 'pct_1m' => 12, 'color' => 'success'],
             'memory' => ['total' => '8 GiB', 'used' => '2 GiB', 'available' => '6 GiB', 'cached' => '1 GiB', 'used_pct' => 25, 'color' => 'success'],
             'disks' => [],
+            'disk_usage' => null,
             'interfaces' => [['name' => 'eth0', 'state' => 'UP', 'color' => 'success', 'ips' => ['192.168.1.2/24'], 'mac' => 'aa:bb']],
             'docker' => [],
             'services' => [['name' => 'nginx', 'state' => 'active', 'color' => 'success']],
@@ -87,11 +88,22 @@ final class HealthControllerTest extends TestCase
         self::assertStringContainsString('128MiB / 512MiB', $html);
     }
 
+    public function test_disk_card_is_red_above_85_percent(): void
+    {
+        $data = $this->fullData();
+        $data['disk_usage'] = ['used' => '90 GiB', 'size' => '100 GiB', 'used_pct' => 90, 'color' => 'danger'];
+
+        $html = (string) $this->controller($data)->show(Request::create('/_logui/health'))->getContent();
+
+        self::assertStringContainsString('90 GiB / 100 GiB', $html);
+        self::assertStringContainsString('hl-danger', $html);
+    }
+
     public function test_shows_note_when_nothing_is_available(): void
     {
         $empty = [
             'model' => null, 'uptime' => null, 'temperature' => null, 'throttle' => null, 'load' => null,
-            'memory' => [], 'disks' => [], 'interfaces' => [], 'docker' => [], 'services' => [], 'processes' => [], 'network_usage' => null,
+            'memory' => [], 'disks' => [], 'disk_usage' => null, 'interfaces' => [], 'docker' => [], 'services' => [], 'processes' => [], 'network_usage' => null,
         ];
 
         $html = (string) $this->controller($empty)->show(Request::create('/_logui/health'))->getContent();

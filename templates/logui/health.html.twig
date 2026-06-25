@@ -38,6 +38,15 @@
         <div class="bar"><span class="hl-{{ h.memory.color }}" style="width:{{ h.memory.used_pct }}%"></span></div>
     </div>
     {% endif %}
+
+    {% if h.disk_usage %}
+    <div class="card">
+        <h4>Disk</h4>
+        <div class="big hl-{{ h.disk_usage.color }}">{{ h.disk_usage.used_pct }}%</div>
+        <div class="ctx" style="font-size:12px">{{ h.disk_usage.used }} / {{ h.disk_usage.size }}</div>
+        <div class="bar"><span class="hl-{{ h.disk_usage.color }}" style="width:{{ h.disk_usage.used_pct }}%"></span></div>
+    </div>
+    {% endif %}
 </div>
 
 {% if h.throttle %}
@@ -48,27 +57,6 @@
     {% else %}
         <p class="hl-danger">{{ h.throttle.issues|join(', ') }}</p>
     {% endif %}
-</div>
-{% endif %}
-
-{% if h.processes is not empty %}
-<div class="section">
-    <h3>Top processes</h3>
-    <table>
-        <thead><tr><th class="num">PID</th><th>User</th><th class="num">%CPU</th><th class="num">%MEM</th><th class="num">RSS</th><th>Command</th></tr></thead>
-        <tbody>
-        {% for p in h.processes %}
-            <tr>
-                <td class="num ctx">{{ p.pid }}</td>
-                <td class="ctx">{{ p.user }}</td>
-                <td class="num"><span class="hl-{{ p.color }}">{{ p.cpu }}</span></td>
-                <td class="num">{{ p.mem }}</td>
-                <td class="num">{{ p.rss }}</td>
-                <td>{{ p.command }}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
 </div>
 {% endif %}
 
@@ -89,6 +77,27 @@
                     <span class="hl-{{ d.color }}">{{ d.used_pct }}%</span>
                     <div class="bar"><span class="hl-{{ d.color }}" style="width:{{ d.used_pct }}%"></span></div>
                 </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if h.processes is not empty %}
+<div class="section">
+    <h3>Top processes</h3>
+    <table>
+        <thead><tr><th class="num">PID</th><th>User</th><th class="num">%CPU</th><th class="num">%MEM</th><th class="num">RSS</th><th>Command</th></tr></thead>
+        <tbody>
+        {% for p in h.processes %}
+            <tr>
+                <td class="num ctx">{{ p.pid }}</td>
+                <td class="ctx">{{ p.user }}</td>
+                <td class="num"><span class="hl-{{ p.color }}">{{ p.cpu }}</span></td>
+                <td class="num">{{ p.mem }}</td>
+                <td class="num">{{ p.rss }}</td>
+                <td>{{ p.command }}</td>
             </tr>
         {% endfor %}
         </tbody>

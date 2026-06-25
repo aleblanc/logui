@@ -29,7 +29,8 @@ final class SystemHealthService implements HealthProvider
             'throttle' => $this->getThrottle(),
             'load' => $this->getLoadAverage(),
             'memory' => $this->getMemory(),
-            'disks' => $this->getDisks(),
+            'disks' => $disks = $this->getDisks(),
+            'disk_usage' => $this->diskUsage($disks),
             'interfaces' => $this->getNetworkInterfaces(),
             'docker' => $this->getDockerContainers(),
             'services' => $this->getServices(),
@@ -268,12 +269,43 @@ final class SystemHealthService implements HealthProvider
                 'size' => Bytes::format((int) $size),
                 'used' => Bytes::format((int) $used),
                 'avail' => Bytes::format((int) $avail),
+                'size_bytes' => (int) $size,
+                'used_bytes' => (int) $used,
                 'used_pct' => $pctNum,
                 'color' => $pctNum < 70 ? 'success' : ($pctNum < 85 ? 'warning' : 'danger'),
             ];
         }
 
         return $disks;
+    }
+
+    /**
+     * Aggregate used/size across all real filesystems (red over 85%).
+     *
+     * @param list<array<string, mixed>> $disks
+     *
+     * @return array<string, mixed>|null
+     */
+    private function diskUsage(array $disks): ?array
+    {
+        if ([] === $disks) {
+            return null;
+        }
+
+        $used = (int) array_sum(array_column($disks, 'used_bytes'));
+        $size = (int) array_sum(array_column($disks, 'size_bytes'));
+        if ($size <= 0) {
+            return null;
+        }
+
+        $pct = (int) round($used / $size * 100);
+
+        return [
+            'used' => Bytes::format($used),
+            'size' => Bytes::format($size),
+            'used_pct' => $pct,
+            'color' => $pct < 70 ? 'success' : ($pct < 85 ? 'warning' : 'danger'),
+        ];
     }
 
     /** @return list<array<string, mixed>> */

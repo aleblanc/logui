@@ -14,7 +14,7 @@ final class SystemHealthServiceTest extends TestCase
     {
         $data = (new SystemHealthService([], new VnstatService()))->getData();
 
-        foreach (['model', 'uptime', 'temperature', 'throttle', 'load', 'memory', 'disks', 'interfaces', 'docker', 'services', 'processes', 'network_usage'] as $key) {
+        foreach (['model', 'uptime', 'temperature', 'throttle', 'load', 'memory', 'disks', 'disk_usage', 'interfaces', 'docker', 'services', 'processes', 'network_usage'] as $key) {
             self::assertArrayHasKey($key, $data);
         }
 

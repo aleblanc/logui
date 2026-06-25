@@ -18,6 +18,9 @@ reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 ![LogUI — request detail](screenshots/detail.png)
 *Request detail: timing, RAM start→peak, SQL count, and the request's own log records (filterable by level & channel).*
 
+![LogUI — health tab](screenshots/health.png)
+*Health tab (sepia theme): host cards (uptime, load, memory, aggregate disk usage — red over 85%) and the per-filesystem disks table.*
+
 ## Features
 
 - Auto-capture: **HTTP requests**, **console commands**, **Monolog records** (level counts + the request's records), **uncaught exceptions**, **SQL queries** (count + slow, when `doctrine/dbal` is present).
@@ -63,7 +66,7 @@ a random `LOGUI_PASSWORD` is generated into `.env` (override it in `.env.local` 
 **2. Require the package** — the recipe runs on install:
 
 ```bash
-composer require aleblanc/logui:^0.1
+composer require aleblanc/logui
 ```
 
 This auto-registers the bundle, creates `config/routes/log_ui.yaml` + `config/packages/log_ui.yaml`,
@@ -135,6 +138,42 @@ You log in with your normal app session, and navigation just works. Protect the 
 ```yaml
 access_control:
     - { path: ^/_logui, roles: ROLE_ADMIN }
+```
+
+## Health tab
+
+Read-only host metrics at `/_logui/health`. Every metric is gathered on demand and **degrades
+gracefully**: when the source file/command is missing, that card or section is simply **not rendered**
+(nothing to configure to "turn it off" on an unsupported host).
+
+### Top cards
+
+| Card | Shows | Source | Colour |
+|---|---|---|---|
+| **Host** | machine model (or OS family) | `/proc/cpuinfo` (`Model:`), else `PHP_OS_FAMILY` | — |
+| **Uptime** | human uptime (`10j 20h 0min`) | `/proc/uptime` | — |
+| **Temperature** | CPU temp (Raspberry Pi) | `vcgencmd measure_temp`, else `/sys/class/thermal/thermal_zone0/temp` | green <60 °C, amber <70 °C, red ≥70 °C |
+| **Load (1/5/15 min)** | load averages + CPU count + bar | `/proc/loadavg`, `/proc/cpuinfo` | green; amber > 70% of cores; red > cores |
+| **Memory** | used %, used/total + cache, bar | `/proc/meminfo` | green <70%, amber <85%, red ≥85% |
+| **Disk** | aggregate used/size across all real filesystems, bar | sum of `df` | green <70%, amber <85%, **red ≥85%** |
+
+### Sections
+
+| Section | Shows | Source | Notes |
+|---|---|---|---|
+| **Power / Throttling** | under-voltage / frequency-capped / throttled / soft-temp flags (current + since-boot) | `vcgencmd get_throttled` | Raspberry Pi only; "OK" when clean |
+| **Disks** | per-filesystem: mount, source, FS, used, size, usage % + bar | `df -B1 --output=source,fstype,size,used,avail,pcent,target` | skips `tmpfs`/`devtmpfs`/`overlay`/`udev`/`squashfs`; same green/amber/red thresholds |
+| **Top processes** | up to **20** processes by CPU: PID, user, %CPU, %MEM, RSS, command | `ps -eo pid,user,pcpu,pmem,rss,comm --sort=-pcpu` | %CPU amber ≥40, red ≥80 |
+| **Network interfaces** | name, state, IPv4 addresses, MAC | `ip -j addr show` | skips `lo`, `veth*`, `br-*` |
+| **Network usage** | per-interface ↓rx / ↑tx / total, and current month *total → projected estimate* (+ % of month elapsed) | `vnstat --json` | hidden entirely when vnstat is absent |
+| **Docker** | container, image, status, live **CPU%** and **memory (usage / limit)** | `docker ps -a` + `docker stats --no-stream` | CPU/memory shown only when `docker stats` succeeds |
+| **Services** | configured systemd units with their state badge | `systemctl is-active <unit>` | only the units listed in `health_services` (empty ⇒ section hidden) |
+
+Configure the monitored systemd units in `config/packages/log_ui.yaml`:
+
+```yaml
+log_ui:
+    health_services: [nginx, mariadb, php8.4-fpm]
 ```
 
 ## How it works
