@@ -1,4 +1,7 @@
 {% set nav = ui_path|default('/_logui') %}
+{% set requests = nav ~ '/requests' %}
+{# Used only to light up the current tab; absent outside a web request, hence the guard. #}
+{% set here = (app is defined and app.request is not null) ? app.request.pathinfo : nav %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -7,16 +10,63 @@
     <title>{{ title }} · LogUI</title>
     <script>(function(){try{var t=localStorage.getItem('logui-theme');if(t){document.documentElement.dataset.theme=t;}}catch(e){}})();</script>
     <style>
-        /* Dark (default) */
-        :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#d7dbe3; --mut:#8b93a3; --accent:#5ac8fa; --err:#ff6b6b; --warn:#ffd166; }
-        [data-theme="light"] { --bg:#f7f8fa; --panel:#ffffff; --line:#e3e6ec; --txt:#1b1f27; --mut:#697086; --accent:#0969da; --err:#c0392b; --warn:#b7791f; }
-        [data-theme="sepia"] { --bg:#f3ead6; --panel:#fbf4e3; --line:#e0d3b0; --txt:#433520; --mut:#8a795c; --accent:#9a5b33; --err:#a8341f; --warn:#9a6b00; }
+        /* Every theme owns three decorative tokens: --aurora (the page backdrop), --sheen (the
+           gradient on panels and cards) and --edge (their top highlight). The defaults below are
+           the dark theme's; the others replace them wholesale.
+
+           They are declared here, *before* the theme blocks: `:root` and `[data-theme=…]` have
+           equal specificity, so whichever comes last would win. */
+        /* Dark (default) — cold light, deep blue and violet in the corners. */
+        :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#d7dbe3; --mut:#8b93a3; --accent:#5ac8fa; --err:#ff6b6b; --warn:#ffd166;
+                --glow:rgba(90,200,250,.16); --glow2:rgba(167,139,250,.10);
+                --aurora:
+                    radial-gradient(88ch 52ch at 2% -15%, rgba(52,152,214,.26), transparent 62%),
+                    radial-gradient(74ch 46ch at 102% -8%, rgba(124,100,216,.24), transparent 64%),
+                    radial-gradient(138ch 74ch at 56% 117%, rgba(34,86,126,.22), transparent 66%);
+                --sheen: linear-gradient(156deg, rgba(118,176,220,.07), rgba(140,120,200,.05) 52%, rgba(0,0,0,.22));
+                --edge: inset 0 1px 0 rgba(255,255,255,.055); }
+        /* Light — paper under a cool window, with the same geometry. */
+        [data-theme="light"] { --bg:#eef1f6; --panel:#ffffff; --line:#dde2ea; --txt:#1b1f27; --mut:#697086; --accent:#0969da; --err:#c0392b; --warn:#b7791f;
+                --glow:rgba(9,105,218,.12); --glow2:rgba(167,139,250,.08);
+                --aurora:
+                    radial-gradient(90ch 52ch at 2% -15%, rgba(9,105,218,.20), transparent 62%),
+                    radial-gradient(76ch 46ch at 102% -8%, rgba(126,104,214,.17), transparent 64%),
+                    radial-gradient(138ch 74ch at 56% 117%, rgba(34,82,146,.15), transparent 66%),
+                    radial-gradient(92ch 70ch at 50% 42%, rgba(255,255,255,.72), transparent 70%);
+                --sheen: linear-gradient(156deg, rgba(255,255,255,.95), rgba(228,236,248,.50) 52%, rgba(126,151,186,.16));
+                --edge: inset 0 1px 0 rgba(255,255,255,.95); }
+        /* Sepia is the warm one: aged paper lit by copper. The palette leans orange-brown rather
+           than yellow so the gradients read as metal on parchment and not as a stain. */
+        [data-theme="sepia"] { --bg:#e7d7b4; --panel:#fdf7e8; --line:#cdb48a; --txt:#3a2c19; --mut:#8a7752; --accent:#a1551f; --err:#a3301b; --warn:#8a5905;
+                --glow:rgba(170,90,38,.26); --glow2:rgba(212,148,74,.24);
+                /* Copper poured into the corners, paper left bright in the middle. */
+                --aurora:
+                    radial-gradient(92ch 54ch at 2% -16%, rgba(166,86,34,.42), transparent 62%),
+                    radial-gradient(78ch 48ch at 102% -8%, rgba(208,142,66,.40), transparent 64%),
+                    radial-gradient(140ch 74ch at 56% 118%, rgba(122,66,28,.36), transparent 66%),
+                    radial-gradient(90ch 70ch at 50% 40%, rgba(255,252,243,.55), transparent 70%);
+                /* Panels catch the same light: bright edge top-left, copper settling bottom-right. */
+                --sheen: linear-gradient(156deg, rgba(255,253,247,.92), rgba(240,219,180,.45) 52%, rgba(168,104,50,.26));
+                --edge: inset 0 1px 0 rgba(255,253,247,.9); }
+        /* Log typography. Coding faces first — whichever the machine happens to have — then the
+           platform default. Nothing is downloaded: LogUI must work on a box with no internet. */
+        :root { --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Fira Code", "Cascadia Mono",
+                        "Roboto Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace; }
+        /* Level palette — one source of truth for badges, chart bars and the live flash. */
+        :root {
+            --lvl-emergency:#7f1d1d; --lvl-alert:#991b1b; --lvl-critical:#b91c1c; --lvl-error:#dc2626;
+            --lvl-warning:#d97706; --lvl-notice:#2563eb; --lvl-info:#3b82f6; --lvl-debug:#9ca3af; --lvl-other:#6b7280;
+        }
         * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--txt); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
-        header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; }
+        /* A faint aurora behind everything: fixed, pointer-transparent, purely decorative. */
+        body::before { content:''; position:fixed; inset:0; z-index:-1; pointer-events:none; background:var(--aurora); }
+        header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center;
+            background-image:var(--sheen); }
         header b { font-family:ui-monospace,monospace; letter-spacing:.5px; } header .mut { color:var(--mut); }
         header .spacer { flex:1; }
         select#logui-theme { background:var(--panel); border:1px solid var(--line); color:var(--txt); padding:4px 8px; border-radius:6px; }
         main { padding:20px; max-width:1100px; margin:0 auto; }
+        main.wide { max-width:1560px; }
         a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
         table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
         th { color:var(--mut); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
@@ -31,10 +81,11 @@
         pre { background:var(--panel); border:1px solid var(--line); padding:12px; border-radius:8px; overflow:auto; }
         .ctx { color:var(--mut); }
         nav.tabs { display:flex; gap:16px; padding:0 20px; border-bottom:1px solid var(--line); }
-        nav.tabs a { padding:10px 0; color:var(--mut); border-bottom:2px solid transparent; }
+        nav.tabs a { padding:10px 0; color:var(--mut); border-bottom:2px solid transparent; transition:color .15s, border-color .15s; }
         nav.tabs a:hover { color:var(--txt); text-decoration:none; }
+        nav.tabs a.on { color:var(--txt); border-bottom-color:var(--accent); }
         .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
-        .stat { display:inline-block; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:13px; color:var(--mut); cursor:pointer; }
+        .stat { display:inline-block; background:var(--panel); background-image:var(--sheen); box-shadow:var(--edge); border:1px solid var(--line); border-radius:8px; padding:8px 14px; font-size:13px; color:var(--mut); cursor:pointer; }
         .stat:hover { border-color:var(--accent); text-decoration:none; color:var(--txt); }
         .stat.active { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
         .stat b { color:var(--txt); font-family:ui-monospace,monospace; font-size:16px; margin-right:2px; }
@@ -46,7 +97,7 @@
         .msg-toggle:hover { text-decoration:underline; }
         /* Health */
         .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; margin:18px 0; }
-        .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+        .card { background:var(--panel); background-image:var(--sheen); box-shadow:var(--edge); border:1px solid var(--line); border-radius:10px; padding:14px; }
         .card h4 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:var(--mut); font-weight:600; }
         .card .big { font-size:20px; font-family:ui-monospace,monospace; }
         .bar { background:var(--line); border-radius:6px; height:8px; overflow:hidden; margin-top:8px; }
@@ -75,11 +126,12 @@
         </select>
     </header>
     <nav class="tabs">
-        <a href="{{ nav }}">Requests</a>
-        <a href="{{ nav }}/logs">Files</a>
-        <a href="{{ nav }}/health">Health</a>
+        <a href="{{ nav }}" class="{{ here == nav ? 'on' }}">Explore</a>
+        <a href="{{ requests }}" class="{{ here starts with requests ? 'on' }}">Requests</a>
+        <a href="{{ nav }}/logs" class="{{ here starts with nav ~ '/logs' ? 'on' }}">Files</a>
+        <a href="{{ nav }}/health" class="{{ here starts with nav ~ '/health' ? 'on' }}">Health</a>
     </nav>
-    <main>{% block content %}{% endblock %}</main>
+    <main class="{% block main_class %}{% endblock %}">{% block content %}{% endblock %}</main>
     <script>
         (function () {
             var sel = document.getElementById('logui-theme');

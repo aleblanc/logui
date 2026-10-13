@@ -1,0 +1,1409 @@
+{% extends '@LogUi/logui/layout.html.twig' %}
+
+{% block main_class %}wide{% endblock %}
+
+{% block content %}
+<div id="explore"
+     data-base="{{ ui_path }}/explore"
+     data-from="{{ from }}"
+     data-to="{{ to }}"
+     {# Escaped explicitly, not left to autoescape: this bundle renders inside the host's Twig,
+        and these values come straight off the query string. #}
+     data-levels="{{ levels|default([])|join(',')|e('html_attr') }}"
+     data-channels="{{ channels|default([])|join(',')|e('html_attr') }}"
+     data-selected="{{ selected|join(',')|e('html_attr') }}"
+     data-follow="{{ follow|default(true) ? '1' : '0' }}"
+     {# Public refs and labels only — the absolute server path never reaches the browser. #}
+     data-sources="{{ sources|map(s => {ref: s.ref, label: s.label})|json_encode|e('html_attr') }}">
+
+    <section class="ex-hero">
+        {# The search everyone needs, first. LogQL is a power tool and lives behind a link. #}
+        <form class="ex-query" onsubmit="return false">
+            {# Drawn, not typed: the ⌕ character is missing or ugly in most UI fonts. #}
+            <span class="ex-prompt" aria-hidden="true">
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none"
+                     stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                    <circle cx="6.8" cy="6.8" r="4.4"/><path d="M10.2 10.2 14 14"/>
+                </svg>
+            </span>
+            <input type="search" id="ex-grep" value="{{ grep|default('')|e('html_attr') }}" spellcheck="false" autocomplete="off"
+                   placeholder="search the logs — e.g. payment failed">
+            <label class="ex-opt" title="Treat the search as a regular expression instead of plain text">
+                <input type="checkbox" id="ex-grep-re"{{ grep_regex|default(false) ? ' checked' }}> regexp
+            </label>
+            <button type="submit" id="ex-run">Run</button>
+        </form>
+
+        <p class="ex-more">
+            <button type="button" id="ex-logql-toggle" class="ex-link" aria-expanded="false">
+                <span class="caret">▸</span> LogQL query
+            </button>
+            <span class="ctx ex-logql-on" hidden>· a query is active</span>
+        </p>
+
+        <div id="ex-logql" hidden>
+            <div class="ex-query">
+                <span class="ex-prompt" aria-hidden="true">{</span>
+                <input type="search" id="ex-q" value="{{ query|e('html_attr') }}" spellcheck="false" autocomplete="off"
+                       placeholder='{file="var/log/dev.log"} |= "payment" | json | status >= 500'>
+            </div>
+            <p class="ctx ex-hint">
+                Plain text searches everything · <code>{…}</code> stream selector ·
+                <code>|=</code> <code>!=</code> <code>|~</code> <code>!~</code> line filters ·
+                <code>| json</code> · <code>| status &gt;= 500</code> label filters
+            </p>
+        </div>
+
+        <p id="ex-error" class="ex-error" hidden></p>
+    </section>
+
+    <div class="ex-kpis" id="ex-kpis"></div>
+
+    <section class="ex-panel">
+        <header class="ex-head">
+            <span class="ex-title">Records over time</span>
+            <span class="ctx" id="ex-window"></span>
+            <span class="ex-grow"></span>
+            <select id="ex-span" aria-label="Time range">
+                <option value="900000">last 15 min</option>
+                <option value="3600000" selected>last hour</option>
+                <option value="21600000">last 6 h</option>
+                <option value="86400000">last 24 h</option>
+                <option value="604800000">last 7 days</option>
+                <option value="1209600000">last 14 days</option>
+                <option value="2419200000">last 28 days</option>
+            </select>
+            <button type="button" id="ex-reset" class="ex-ghost">⤢ reset zoom</button>
+        </header>
+        <div class="ex-chart">
+            <svg id="ex-hist" preserveAspectRatio="none" aria-label="records over time"></svg>
+            <div id="ex-tip" class="ex-tip" hidden></div>
+        </div>
+        <p class="ctx ex-foot" id="ex-stats"></p>
+        {# Partial results must announce themselves: a gap you did not know about reads as "no
+           such log", and that is how you end up hunting a bug that is simply off-screen. #}
+        <p class="ex-warn" id="ex-truncated" hidden></p>
+    </section>
+
+    <div class="ex-split">
+        {#
+           Fields panel. One collapsible group per field, each listing the values that actually
+           occur with their share of the matches — so you filter by clicking what is there rather
+           than by guessing what might be. Built entirely from the histogram's facet counts;
+           the file group also knows about sources that matched nothing in this window.
+        #}
+        <aside class="ex-panel ex-fields">
+            <header class="ex-head">
+                <span class="ex-title">Fields</span>
+                <span class="ex-grow"></span>
+                <button type="button" id="ex-clear" class="ex-ghost ex-mini" hidden>clear</button>
+            </header>
+            <div id="ex-groups"><p class="ctx">…</p></div>
+            {#
+               Watching a live tail means polling, and the polling is itself logged — by the
+               access log and by the router. On a quiet application that is most of what you see.
+               Hidden by default, but shown as a toggle: a filter you cannot see is a trap.
+            #}
+            <label class="ex-noise" title="Records about requests to LogUI's own pages">
+                <input type="checkbox" id="ex-self"{{ include_self|default(false) ? '' : ' checked' }}>
+                hide LogUI's own traffic
+            </label>
+        </aside>
+
+        <section class="ex-panel ex-rowspanel">
+            <header class="ex-head">
+                <span class="ex-title">Logs</span>
+                <span class="ctx" id="ex-count"></span>
+                <span class="ex-grow"></span>
+                <select id="ex-limit" class="ex-mini" aria-label="Rows to show" title="How many records to list">
+                    <option value="50">50 rows</option>
+                    <option value="100" selected>100 rows</option>
+                    <option value="200">200 rows</option>
+                    <option value="500">500 rows</option>
+                    <option value="1000">1000 rows</option>
+                </select>
+                <button type="button" id="ex-wrap" class="ex-ghost ex-mini">wrap</button>
+                <button type="button" id="ex-expand" class="ex-ghost ex-mini">expand all</button>
+                <button type="button" id="ex-clear-rows" class="ex-ghost ex-mini" title="Empty the list — the logs themselves are untouched">clear</button>
+                <button type="button" id="ex-refresh" class="ex-ghost ex-mini" title="Re-read up to now">↻ refresh</button>
+                {# Live belongs with the list it fills, not with the query box. #}
+                <button type="button" id="ex-live" class="ex-toggle ex-mini"><i class="ex-dot"></i>Live</button>
+            </header>
+            <div class="ex-scroll">
+                <table class="ex-rows">
+                    <colgroup>
+                        <col class="c-caret"><col class="c-time"><col class="c-level">
+                        <col class="c-channel"><col class="c-file"><col>
+                    </colgroup>
+                    <thead><tr><th></th><th>Time</th><th>Level</th><th>Channel</th><th>File</th><th>Message</th></tr></thead>
+                    <tbody id="ex-body"></tbody>
+                </table>
+            </div>
+            <p class="ctx ex-foot" id="ex-empty" hidden></p>
+        </section>
+    </div>
+</div>
+
+{# Offered when text is selected inside the log table: one click to search for what you highlighted. #}
+<div id="ex-sel" class="ex-selpop" hidden>
+    <button type="button" id="ex-sel-grep">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+            <circle cx="6.8" cy="6.8" r="4.4"/><path d="M10.2 10.2 14 14"/>
+        </svg>
+        Grep <b id="ex-sel-text"></b>
+    </button>
+</div>
+
+{# Full-viewport tint flashed when a record arrives live. Decorative, never intercepts clicks. #}
+<div id="ex-pulse" aria-hidden="true"></div>
+
+<style>
+/* ---------------------------------------------------------------- shell */
+.ex-hero { margin-bottom:14px; }
+.ex-query { display:flex; gap:8px; align-items:stretch; }
+.ex-query .ex-prompt { display:flex; align-items:center; padding:0 2px 0 12px; margin-right:-8px;
+    position:relative; z-index:1; font:600 16px/1 var(--mono); color:var(--accent); opacity:.75; }
+.ex-query .ex-prompt svg { display:block; }
+.ex-query input { flex:1; font:14px/1.5 ui-monospace,monospace; padding:12px 14px 12px 24px; border-radius:10px;
+    background:var(--panel); border:1px solid var(--line); transition:border-color .15s, box-shadow .15s; }
+.ex-query input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 4px var(--glow); }
+.ex-query button { border-radius:10px; padding:0 18px; font-weight:600; }
+.ex-opt { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:0 13px;
+    font-size:.8rem; color:var(--mut); white-space:nowrap; }
+.ex-opt:hover { color:var(--txt); border-color:var(--accent); }
+.ex-opt input { accent-color:var(--accent); margin:0; width:13px; height:13px; }
+.ex-opt:has(input:checked) { color:var(--accent); border-color:var(--accent); }
+
+/* The LogQL disclosure: a link, not a second search box competing for attention. */
+.ex-more { margin:9px 2px 0; display:flex; align-items:center; gap:8px; font-size:.78rem; }
+.ex-link { background:transparent; border:0; padding:0; color:var(--mut); cursor:pointer;
+    font:inherit; display:inline-flex; align-items:center; gap:6px; }
+.ex-link:hover { color:var(--accent); }
+.ex-link .caret { font-size:9px; transition:transform .15s; display:inline-block; }
+.ex-link[aria-expanded="true"] { color:var(--accent); }
+.ex-link[aria-expanded="true"] .caret { transform:rotate(90deg); }
+#ex-logql { margin-top:8px; }
+#ex-logql .ex-query input { font-size:13px; padding-top:9px; padding-bottom:9px; }
+.ex-hint { margin:8px 2px 0; font-size:.78rem; }
+.ex-hint code { font-size:.78rem; background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+.ex-error { margin:10px 0 0; color:var(--err); background:color-mix(in srgb, var(--err) 12%, transparent);
+    border:1px solid color-mix(in srgb, var(--err) 40%, transparent); padding:8px 12px; border-radius:8px;
+    font-family:ui-monospace,monospace; font-size:.8rem; }
+
+/* Live toggle: the dot breathes only while the stream is on. */
+.ex-toggle { background:var(--panel); color:var(--mut); border:1px solid var(--line);
+    display:inline-flex; align-items:center; gap:7px; border-radius:8px; }
+.ex-toggle.ex-mini { padding:3px 11px; }
+.ex-toggle .ex-dot { width:8px; height:8px; border-radius:50%; background:currentColor; display:block; }
+.ex-toggle.on { background:color-mix(in srgb, var(--err) 16%, var(--panel)); color:var(--err);
+    border-color:color-mix(in srgb, var(--err) 55%, transparent); }
+.ex-toggle.on .ex-dot { animation:exBreathe 1.4s ease-in-out infinite; }
+@keyframes exBreathe { 0%,100% { opacity:1; box-shadow:0 0 0 0 currentColor; } 50% { opacity:.55; box-shadow:0 0 0 5px transparent; } }
+
+/* ---------------------------------------------------------------- panels */
+.ex-panel { background-color:color-mix(in srgb, var(--panel) 80%, transparent); background-image:var(--sheen);
+    box-shadow:var(--edge); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px; backdrop-filter:blur(6px); }
+.ex-head { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+.ex-title { font-size:12px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); font-weight:600; }
+.ex-grow { flex:1; }
+.ex-foot { margin:8px 0 0; font-size:.78rem; }
+.ex-warn { margin:8px 0 0; font-size:.78rem; color:var(--warn);
+    background:color-mix(in srgb, var(--warn) 12%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+    border-radius:8px; padding:7px 11px; }
+.ex-ghost { background:transparent; color:var(--mut); border:1px solid var(--line); padding:5px 12px; border-radius:8px; }
+.ex-ghost:hover { color:var(--txt); border-color:var(--accent); }
+.ex-ghost:disabled { opacity:.4; cursor:default; border-color:var(--line); color:var(--mut); }
+
+/* ---------------------------------------------------------------- KPIs */
+.ex-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px; }
+.ex-kpi { background-color:color-mix(in srgb, var(--panel) 80%, transparent); background-image:var(--sheen);
+    box-shadow:var(--edge); border:1px solid var(--line); border-radius:14px; padding:12px 14px; position:relative; overflow:hidden; }
+.ex-kpi::after { content:''; position:absolute; inset:auto 0 0 0; height:2px; background:var(--tint,transparent); opacity:.8; }
+.ex-kpi h5 { margin:0 0 4px; font:600 11px/1 ui-sans-serif,system-ui,sans-serif; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--mut); }
+.ex-kpi b { font:600 24px/1.1 ui-monospace,monospace; font-variant-numeric:tabular-nums; color:var(--tint,var(--txt)); }
+.ex-kpi small { display:block; color:var(--mut); font-size:.72rem; margin-top:3px; }
+
+/* ---------------------------------------------------------------- chart */
+.ex-chart { position:relative; }
+#ex-hist { width:100%; height:170px; display:block; cursor:crosshair; user-select:none; touch-action:none; }
+#ex-hist .ex-bar { animation:exGrow .45s cubic-bezier(.2,.9,.3,1) both; transform-box:fill-box; transform-origin:bottom; }
+@keyframes exGrow { from { transform:scaleY(0); opacity:.3; } to { transform:scaleY(1); opacity:1; } }
+.ex-tip { position:absolute; pointer-events:none; background:var(--bg); color:var(--txt);
+    border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.35);
+    padding:8px 10px; border-radius:10px; font-size:.75rem; z-index:5; min-width:130px; }
+.ex-tip b { display:block; font:600 12px/1.4 ui-monospace,monospace; margin-bottom:4px; }
+.ex-tip .r { display:flex; align-items:center; gap:10px; justify-content:space-between; font-family:ui-monospace,monospace; }
+.ex-tip .r i { width:8px; height:8px; border-radius:2px; display:inline-block; margin-right:5px; }
+.ex-tip .r span { color:var(--mut); display:flex; align-items:center; }
+.ex-tip .r em { font-style:normal; font-variant-numeric:tabular-nums; }
+
+/* ---------------------------------------------------------------- fields + logs split */
+.ex-split { display:grid; grid-template-columns:265px minmax(0,1fr); gap:14px; align-items:start; }
+@media (max-width:1100px) { .ex-split { grid-template-columns:1fr; } }
+.ex-fields { position:sticky; top:14px; max-height:calc(100vh - 28px); overflow:auto; }
+.ex-mini { font-size:.72rem; padding:3px 9px; }
+select.ex-mini { padding:3px 6px; border-radius:8px; }
+
+/* A collapsible group per field — <details> so keyboard and screen readers get it for free. */
+.ex-group { border-top:1px solid var(--line); }
+.ex-group:first-child { border-top:0; }
+.ex-group > summary { display:flex; align-items:center; gap:7px; cursor:pointer; padding:8px 2px;
+    list-style:none; font:600 11px/1 ui-sans-serif,system-ui,sans-serif; text-transform:uppercase;
+    letter-spacing:.5px; color:var(--mut); }
+.ex-group > summary::-webkit-details-marker { display:none; }
+.ex-group > summary::before { content:'▸'; font-size:9px; transition:transform .15s; color:var(--mut); }
+.ex-group[open] > summary::before { transform:rotate(90deg); }
+.ex-group > summary:hover { color:var(--txt); }
+.ex-group .k { flex:1; }
+.ex-group .c { font:400 10px/1 var(--mono); color:var(--mut); }
+.ex-group .c.hit { color:var(--accent); }
+
+.ex-noise { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none;
+    margin-top:10px; padding-top:10px; border-top:1px solid var(--line);
+    font-size:.74rem; color:var(--mut); }
+.ex-noise:hover { color:var(--txt); }
+.ex-noise input { accent-color:var(--accent); margin:0; width:12px; height:12px; }
+.ex-vals { padding:0 0 8px; display:flex; flex-direction:column; gap:1px; }
+.ex-val { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; position:relative;
+    padding:4px 7px; border-radius:6px; font:11.5px/1.3 var(--mono); overflow:hidden; }
+.ex-val:hover { background:color-mix(in srgb, var(--accent) 10%, transparent); }
+.ex-val input { accent-color:var(--accent); margin:0; width:12px; height:12px; flex:0 0 auto; }
+.ex-val .d { width:7px; height:7px; border-radius:2px; flex:0 0 auto; background:var(--tint,var(--mut)); }
+.ex-val .name { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ex-val .n { color:var(--mut); font-size:10.5px; font-variant-numeric:tabular-nums; }
+.ex-val.on { background:color-mix(in srgb, var(--tint,var(--accent)) 16%, transparent); }
+/* Share of the matches, drawn behind the label — the eye reads the bar before the number. */
+.ex-val .share { position:absolute; left:0; bottom:0; height:2px; background:var(--tint,var(--accent)); opacity:.55; }
+
+/* ---------------------------------------------------------------- rows */
+.ex-rowspanel { padding:10px 12px 12px; }
+.ex-scroll { overflow-x:auto; }
+.ex-rows { width:100%; table-layout:fixed; font:11.5px/1.45 var(--mono); }
+.ex-rows col.c-caret { width:20px; } .ex-rows col.c-time { width:98px; }
+.ex-rows.dated col.c-time { width:140px; }
+.ex-rows col.c-level { width:74px; } .ex-rows col.c-channel { width:94px; } .ex-rows col.c-file { width:128px; }
+.ex-rows th { padding:4px 8px; font-size:9.5px; }
+.ex-rows td { padding:3px 8px; vertical-align:top; border-bottom:1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.ex-rows tr.ex-row { cursor:pointer; }
+.ex-rows tr.ex-row:hover td { background:color-mix(in srgb, var(--accent) 7%, transparent); }
+.ex-rows .t { white-space:nowrap; font-variant-numeric:tabular-nums; color:var(--mut); }
+.ex-rows .caret { color:var(--mut); transition:transform .15s; display:inline-block; }
+.ex-rows tr.open .caret { transform:rotate(90deg); }
+.ex-rows .trunc { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ex-rows .lvl { font-size:10px; letter-spacing:.3px; text-transform:uppercase; color:var(--tint,var(--mut)); }
+.ex-rows .lvl::before { content:'■ '; font-size:9px; }
+.ex-rows.wrap .trunc { white-space:pre-wrap; overflow-wrap:anywhere; }
+.ex-inferred { opacity:.6; border-bottom:1px dotted currentColor; cursor:help; }
+
+/* The expanded record: every field of that line, spelled out. */
+.ex-detail > td { padding:6px 8px 12px 28px; background:color-mix(in srgb, var(--panel) 55%, transparent); }
+.ex-kv { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:3px 14px; font:11.5px/1.5 var(--mono); }
+.ex-kv dt { color:var(--mut); }
+.ex-kv dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.ex-json { margin:0; padding:8px 10px; background:var(--bg); border:1px solid var(--line); border-radius:8px;
+    font:11px/1.5 var(--mono); overflow:auto; max-height:22em; }
+
+/* A record that just arrived on the live stream: slides in, then its tint drains away. */
+.ex-rows tr.ex-new { animation:exSlide .35s cubic-bezier(.2,.9,.3,1) both, exFade 2.4s ease-out .35s both; }
+@keyframes exSlide { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:none; } }
+@keyframes exFade { from { background:color-mix(in srgb, var(--tint,var(--accent)) 26%, transparent);
+                           box-shadow:inset 3px 0 0 var(--tint,var(--accent)); }
+                    to   { background:transparent; box-shadow:inset 3px 0 0 transparent; } }
+
+/* ---------------------------------------------------------------- selection popup */
+.ex-selpop { position:absolute; z-index:20; animation:exPop .12s ease-out; }
+.ex-selpop button { background:var(--bg); color:var(--txt); border:1px solid var(--accent);
+    box-shadow:0 6px 20px rgba(0,0,0,.4); border-radius:9px; padding:6px 12px; font-size:.78rem;
+    display:inline-flex; align-items:center; gap:6px; max-width:340px; }
+.ex-selpop button:hover { background:color-mix(in srgb, var(--accent) 18%, var(--bg)); }
+.ex-selpop b { font:600 11.5px/1.2 var(--mono); color:var(--accent);
+    max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@keyframes exPop { from { opacity:0; transform:translateY(4px) scale(.96); } to { opacity:1; transform:none; } }
+
+/* ---------------------------------------------------------------- live pulse */
+#ex-pulse { position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:0;
+    background:radial-gradient(130ch 70ch at 50% 100%, var(--tint,transparent), transparent 70%); }
+#ex-pulse.go { animation:exPulse .9s ease-out; }
+@keyframes exPulse { 0% { opacity:0; } 18% { opacity:.5; } 100% { opacity:0; } }
+
+@media (prefers-reduced-motion:reduce) {
+    #ex-hist .ex-bar, .ex-rows tr.ex-new, #ex-pulse.go, .ex-toggle.on .ex-dot { animation:none; }
+}
+</style>
+
+{% verbatim %}
+<script>
+(function () {
+  'use strict';
+
+  var root = document.getElementById('explore');
+  var BASE = root.dataset.base;
+
+  // Severity order, least to most severe: drives the stacking order, the chip order and which
+  // colour wins when several levels arrive in the same live burst.
+  var ORDER = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency', 'other'];
+
+  // Read the palette from the stylesheet so themes and the chart can never drift apart.
+  var css = getComputedStyle(document.documentElement);
+  var COLOURS = {};
+  ORDER.forEach(function (level) {
+    COLOURS[level] = (css.getPropertyValue('--lvl-' + level) || '#6b7280').trim();
+  });
+  function colourOf(level) { return COLOURS[level] || COLOURS.other; }
+
+  // Rank used to order the facet chips. `other` is a bucket, not a severity, so it ranks last
+  // along with anything the application invented.
+  function severity(level) {
+    var at = ORDER.indexOf(level);
+    return (at < 0 || level === 'other') ? -1 : at;
+  }
+
+  var state = {
+    from: parseInt(root.dataset.from, 10),
+    to: parseInt(root.dataset.to, 10),
+    /**
+     * Following = the window has no fixed end. Requests send only `from`, and the server closes
+     * the window at its own clock, so every reload picks up whatever has been logged since —
+     * rather than freezing on the moment the page happened to be opened.
+     *
+     * Zooming or panning pins both ends and leaves follow mode; picking a range re-enters it.
+     */
+    follow: '1' === root.dataset.follow,
+    span: parseInt(root.dataset.to, 10) - parseInt(root.dataset.from, 10),
+    live: false,
+    source: null,            // EventSource while live
+    buckets: [],
+    interval: 60000,
+    preset: 3600000,         // last range picked from the select — what "reset zoom" goes back to
+    facets: { level: {}, channel: {}, file: {} },
+    matched: 0,
+    levels: splitList(root.dataset.levels),
+    channels: splitList(root.dataset.channels),
+    files: splitList(root.dataset.selected),
+    open: { level: true, channel: true, file: false },   // which field groups are unfolded
+    sources: JSON.parse(root.dataset.sources || '[]'),
+    seen: Object.create(null),   // keys already on screen during this live session
+    polledTo: 0                  // how far the polling fallback has read
+  };
+
+  // The three selectable fields, in the order the panel shows them.
+  var FIELDS = [
+    { key: 'level', label: 'level', picked: function () { return state.levels; } },
+    { key: 'channel', label: 'channel', picked: function () { return state.channels; } },
+    { key: 'file', label: 'file', picked: function () { return state.files; } }
+  ];
+
+  function splitList(raw) {
+    return (raw || '').split(',').filter(function (v) { return v !== ''; });
+  }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var svg = $('ex-hist'), tip = $('ex-tip'), pulse = $('ex-pulse');
+
+  // ---------------------------------------------------------------- params
+
+  /** @param extra values that override the current state — used by the live poller's window. */
+  function params(extra) {
+    var p = new URLSearchParams();
+    p.set('q', $('ex-q').value);
+    if (state.follow) {
+      // No `to`: the server ends the window at its own clock. `from` is computed now, not at
+      // page load, so the window slides forward on every request.
+      p.set('from', Date.now() - state.span);
+    } else {
+      p.set('from', state.from);
+      p.set('to', state.to);
+    }
+    p.set('limit', $('ex-limit').value);
+    if ($('ex-grep').value) {
+      p.set('grep', $('ex-grep').value);
+      if ($('ex-grep-re').checked) p.set('grep_regex', '1');
+    }
+    // Nothing ticked in a group means "no restriction" — same convention as the server.
+    state.files.forEach(function (f) { p.append('files[]', f); });
+    state.levels.forEach(function (l) { p.append('levels[]', l); });
+    state.channels.forEach(function (c) { p.append('channels[]', c); });
+    if (!$('ex-self').checked) p.set('include_self', '1');
+    if (extra) Object.keys(extra).forEach(function (key) { p.set(key, extra[key]); });
+    return p;
+  }
+
+  // Keep the address bar in step so a view can be copied to a colleague.
+  function syncUrl() {
+    try { history.replaceState(null, '', location.pathname + '?' + params()); } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------- format
+
+  function fmtTime(ms) {
+    return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  /**
+   * Row stamps keep the milliseconds: ordering inside a burst is most of why you are reading
+   * this. The date is prefixed once the window spans more than a day, where a bare clock would
+   * not tell you which day a line belongs to.
+   */
+  function fmtStamp(ms) {
+    var d = new Date(ms);
+    var clock = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) +
+      '.' + String(d.getMilliseconds()).padStart(3, '0');
+
+    return multiDay() ? pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + clock : clock;
+  }
+
+  function multiDay() { return state.to - state.from > 86400000; }
+
+  function pad(n) { return String(n).padStart(2, '0'); }
+
+  function fmtClock(ms) {
+    var span = state.to - state.from;
+    var d = new Date(ms);
+    if (span > 86400000) return d.toLocaleDateString([], { day: '2-digit', month: 'short' }) + ' ' +
+      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (span > 7200000) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return fmtTime(ms);
+  }
+
+  function fmtSpan(ms) {
+    var unit = ms >= 86400000 ? [86400000, 'd'] : ms >= 3600000 ? [3600000, 'h'] : ms >= 60000 ? [60000, 'min'] : [1000, 's'];
+    var n = ms / unit[0];
+    // Zooming by hand gives spans like 3.47 min — one decimal, and none once it is big enough
+    // for the decimal to be noise.
+    return (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10) + ' ' + unit[1];
+  }
+
+  function fmtWindow() {
+    var d1 = new Date(state.from), d2 = new Date(state.to);
+    var sameDay = d1.toDateString() === d2.toDateString();
+    // Across days the clock alone is ambiguous — "02:48 PM → 02:48 PM" told you nothing.
+    // Following means the right-hand edge is simply "now", and saying so is clearer than a
+    // timestamp that is already a second out of date.
+    var end = state.follow
+      ? 'now'
+      : (sameDay ? fmtTime(state.to) : d2.toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }));
+
+    var start = sameDay
+      ? d1.toLocaleDateString() + ' · ' + fmtTime(state.from)
+      : d1.toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+    return start + ' → ' + end + ' (' + fmtSpan(state.to - state.from) + ')';
+  }
+
+  /**
+   * Keep the range select honest. Zooming on the chart produces windows no preset matches, and a
+   * select still reading "last hour" over a seven-day window is a lie about what you are looking
+   * at — so an extra entry is added for the current span.
+   */
+  function syncSpanSelect() {
+    // While following, the span is what we asked for. The server's `to` comes from its own clock,
+    // so `to - from` carries any clock skew between the two machines and would never match a
+    // preset exactly — the select would read "zoom · 7 d" for a plain "last 7 days".
+    var span = String(state.follow ? state.span : state.to - state.from);
+    var select = $('ex-span');
+    var custom = $('ex-span-custom');
+    var preset = Array.prototype.some.call(select.options, function (o) {
+      return o.id !== 'ex-span-custom' && o.value === span;
+    });
+
+    if (preset) {
+      if (custom) custom.remove();
+      state.preset = parseInt(span, 10);
+    } else {
+      if (!custom) {
+        custom = new Option('', '');
+        custom.id = 'ex-span-custom';
+        select.appendChild(custom);
+      }
+      custom.value = span;
+      custom.textContent = 'zoom · ' + fmtSpan(parseInt(span, 10));
+    }
+
+    select.value = span;
+  }
+
+  function showError(message) {
+    var box = $('ex-error');
+    box.hidden = !message;
+    box.textContent = message || '';
+  }
+
+  // ---------------------------------------------------------------- data
+
+  function paintWindow() {
+    $('ex-window').textContent = fmtWindow();
+    syncSpanSelect();
+  }
+
+  function refresh() {
+    paintWindow();
+    syncUrl();
+    // A folded-away LogQL query is still filtering; say so next to the link.
+    document.querySelector('.ex-logql-on').hidden = !$('ex-q').value;
+    loadHistogram();
+    // While live the table belongs to the stream. Reloading the window's history over it would
+    // bury the records being captured — the chart still refreshes, the list does not.
+    if (!state.live) loadRows();
+  }
+
+  function fetchJson(path, extra) {
+    return fetch(BASE + path + '?' + params(extra), { headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); });
+  }
+
+  function loadHistogram() {
+    fetchJson('/histogram')
+      .then(function (res) {
+        if (!res.ok) { showError(res.body.error || 'Query error'); return; }
+        showError(null);
+        state.buckets = res.body.buckets;
+        state.interval = res.body.interval;
+        state.facets = res.body.facets;
+        state.matched = res.body.matched;
+
+        // While following, the authoritative window is the one the server actually read — it ends
+        // at the server's clock, not ours. Adopt it before drawing so the bars land on the axis.
+        if (state.follow) {
+          state.from = res.body.from;
+          state.to = res.body.to;
+          paintWindow();
+        }
+
+        draw();
+        renderFacets();
+        renderKpis(res.body);
+        showTruncated(res.body);
+      })
+      .catch(function () { showError('Could not load the histogram.'); });
+  }
+
+  function loadRows() {
+    fetchJson('/query')
+      .then(function (res) {
+        if (!res.ok) { showError(res.body.error || 'Query error'); return; }
+        render(res.body.rows);   // countRows() handles the counter and the empty state
+      })
+      .catch(function () { showError('Could not load the records.'); });
+  }
+
+  // ---------------------------------------------------------------- KPIs
+
+  function renderKpis(h) {
+    var minutes = Math.max(1 / 60, (state.to - state.from) / 60000);
+    var errors = 0, warnings = 0;
+    ['error', 'critical', 'alert', 'emergency'].forEach(function (l) { errors += h.facets.level[l] || 0; });
+    warnings = h.facets.level.warning || 0;
+
+    var cards = [
+      { label: 'Records', value: h.total.toLocaleString(), note: h.truncated ? 'budget reached — partial' : fmtSpan(h.interval) + ' buckets' },
+      { label: 'Errors', value: errors.toLocaleString(), note: pct(errors, h.matched), tint: colourOf('error') },
+      { label: 'Warnings', value: warnings.toLocaleString(), note: pct(warnings, h.matched), tint: colourOf('warning') },
+      { label: 'Rate', value: (h.total / minutes).toFixed(h.total / minutes < 10 ? 1 : 0), note: 'records / min' },
+      { label: 'Query', value: h.tookMs + ' ms', note: Object.keys(h.facets.file).length + ' file(s) scanned' }
+    ];
+
+    var box = $('ex-kpis');
+    box.textContent = '';
+    cards.forEach(function (card) {
+      var el = document.createElement('div');
+      el.className = 'ex-kpi';
+      if (card.tint && card.value !== '0') el.style.setProperty('--tint', card.tint);
+      el.appendChild(tag('h5', card.label));
+      el.appendChild(tag('b', card.value));
+      el.appendChild(tag('small', card.note));
+      box.appendChild(el);
+    });
+  }
+
+  /**
+   * The server gave up before reaching the end of the window — a wide range over many files can
+   * outrun the query budget. Say so plainly: everything on screen is real, but there is more.
+   */
+  function showTruncated(h) {
+    var box = $('ex-truncated');
+    box.hidden = !h.truncated;
+    if (!h.truncated) { box.textContent = ''; return; }
+
+    box.textContent = '⚠ Partial result — the query budget ran out after ' +
+      Math.round(h.tookMs / 100) / 10 + ' s, so the oldest part of this window was not read. ' +
+      'Narrow the range, pick fewer files, or add a search term.';
+  }
+
+  function pct(n, total) {
+    return total ? (n / total * 100).toFixed(n / total < 0.1 ? 2 : 1) + '% of matches' : '—';
+  }
+
+  function tag(name, text) {
+    var el = document.createElement(name);
+    el.textContent = text;
+    return el;
+  }
+
+  // ---------------------------------------------------------------- facets
+
+  function renderFacets() {
+    var box = $('ex-groups');
+    box.textContent = '';
+    FIELDS.forEach(function (field) { box.appendChild(groupNode(field)); });
+
+    var any = state.levels.length + state.channels.length + state.files.length;
+    $('ex-clear').hidden = 0 === any;
+  }
+
+  /** One collapsible field: `<details>` so folding works without a line of script. */
+  function groupNode(field) {
+    var picked = field.picked();
+    var values = valuesOf(field);
+
+    var details = document.createElement('details');
+    details.className = 'ex-group';
+    details.open = state.open[field.key];
+    details.addEventListener('toggle', function () { state.open[field.key] = details.open; });
+
+    var summary = document.createElement('summary');
+    var name = tag('span', field.label);
+    name.className = 'k';
+    var count = tag('span', picked.length ? picked.length + ' of ' + values.length : String(values.length));
+    count.className = 'c' + (picked.length ? ' hit' : '');
+    summary.appendChild(name);
+    summary.appendChild(count);
+    details.appendChild(summary);
+
+    var list = document.createElement('div');
+    list.className = 'ex-vals';
+
+    if (!values.length) {
+      var none = tag('p', 'nothing matched');
+      none.className = 'ctx';
+      list.appendChild(none);
+    }
+
+    var peak = values.reduce(function (m, v) { return Math.max(m, v.count); }, 1);
+    values.forEach(function (value) { list.appendChild(valueNode(field, value, peak, picked)); });
+
+    details.appendChild(list);
+    return details;
+  }
+
+  /**
+   * The values offered for a field, most interesting first.
+   *
+   * Two things are deliberate: a value currently ticked stays listed even when the new window
+   * holds none of it (otherwise panning the chart would silently drop the filter), and every
+   * known log file is listed even at zero, because picking a quiet file is exactly how you find
+   * out it is quiet.
+   */
+  function valuesOf(field) {
+    var counts = state.facets[field.key] || {};
+    var names = Object.keys(counts);
+
+    if ('file' === field.key) {
+      state.sources.forEach(function (s) { if (names.indexOf(s.ref) === -1) names.push(s.ref); });
+    }
+    field.picked().forEach(function (v) { if (names.indexOf(v) === -1) names.push(v); });
+
+    var values = names.map(function (name) { return { name: name, count: counts[name] || 0 }; });
+
+    // Levels read best by severity; everything else by how much of it there is.
+    values.sort('level' === field.key
+      ? function (a, b) { return severity(b.name) - severity(a.name); }
+      : function (a, b) { return b.count - a.count || a.name.localeCompare(b.name); });
+
+    return values;
+  }
+
+  function valueNode(field, value, peak, picked) {
+    var on = picked.indexOf(value.name) !== -1;
+    var tint = 'level' === field.key ? colourOf(value.name) : '';
+
+    var label = document.createElement('label');
+    label.className = 'ex-val' + (on ? ' on' : '');
+    if (tint) label.style.setProperty('--tint', tint);
+    label.title = value.name + ' — ' + value.count + ' of ' + state.matched;
+
+    var tick = document.createElement('input');
+    tick.type = 'checkbox';
+    tick.checked = on;
+    tick.addEventListener('change', function () { toggleValue(field.key, value.name, tick.checked); });
+
+    var name = tag('span', value.name);
+    name.className = 'name';
+
+    var n = tag('span', value.count ? value.count.toLocaleString() : '—');
+    n.className = 'n';
+
+    var share = document.createElement('span');
+    share.className = 'share';
+    share.style.width = (value.count / peak * 100).toFixed(1) + '%';
+
+    label.appendChild(tick);
+    // Only levels carry a colour worth showing; a grey square next to every channel is noise.
+    if (tint) {
+      var dot = document.createElement('span');
+      dot.className = 'd';
+      label.appendChild(dot);
+    }
+    label.appendChild(name);
+    label.appendChild(n);
+    label.appendChild(share);
+
+    return label;
+  }
+
+  function toggleValue(key, name, on) {
+    var list = 'level' === key ? state.levels : ('channel' === key ? state.channels : state.files);
+    var at = list.indexOf(name);
+    if (on && at === -1) list.push(name);
+    if (!on && at !== -1) list.splice(at, 1);
+    restartIfLive();
+    refresh();
+  }
+
+  function clearFilters() {
+    state.levels = [];
+    state.channels = [];
+    state.files = [];
+    restartIfLive();
+    refresh();
+  }
+
+  // ---------------------------------------------------------------- table
+
+  /**
+   * Identity of a record, used to carry UI state across a re-render.
+   *
+   * There is no id in a log line, so this is the closest thing: two lines with the same
+   * timestamp, file and text are the same line for any purpose the UI has.
+   */
+  function keyOf(row) {
+    return row.ts + '|' + row.file + '|' + row.message;
+  }
+
+  function render(rows) {
+    var body = $('ex-body');
+    // The time column has to make room for the date when the stamps carry one.
+    document.querySelector('.ex-rows').classList.toggle('dated', multiDay());
+
+    // Rebuilding the table used to fold every record the user had opened — most visibly in the
+    // live view, where a poll every two seconds would snap an expanded line shut under them.
+    var reopen = {};
+    body.querySelectorAll('tr.ex-row.open').forEach(function (tr) { reopen[tr.dataset.k] = true; });
+
+    body.textContent = '';
+    rows.forEach(function (row) { body.appendChild(rowNode(row, reopen)); });
+    countRows();
+    allExpanded = false;
+    $('ex-expand').textContent = 'expand all';
+  }
+
+  function countRows() {
+    var n = $('ex-body').querySelectorAll('tr.ex-row').length;
+    $('ex-count').textContent = n ? n.toLocaleString() + ' shown' : '';
+    $('ex-empty').hidden = n > 0;
+    $('ex-empty').textContent = state.live
+      ? 'Listening… new records will appear here.'
+      : 'No matching lines in this window.';
+  }
+
+  /**
+   * One record, as a single dense line. The detail row underneath is built now but left hidden:
+   * a page holds a few hundred rows, and building them up front keeps expanding instantaneous.
+   */
+  function rowNode(row, reopen) {
+    var level = (row.level || '').toLowerCase();
+    var tr = document.createElement('tr');
+    tr.className = 'ex-row';
+    tr.dataset.k = keyOf(row);
+
+    var caret = document.createElement('td');
+    var chevron = tag('span', '▸');
+    chevron.className = 'caret';
+    caret.appendChild(chevron);
+    tr.appendChild(caret);
+
+    var time = document.createElement('td');
+    time.className = 't';
+    if (row.ts) {
+      var stamp = tag('span', fmtStamp(row.ts));
+      if (row.tsInferred) {
+        // Console logs carry no date: the placement is a best-effort guess, say so.
+        stamp.className = 'ex-inferred';
+        stamp.title = 'This log has no date of its own — the time was inferred from the file.';
+      }
+      time.appendChild(stamp);
+    } else {
+      time.textContent = '—';
+    }
+    tr.appendChild(time);
+
+    var lvl = document.createElement('td');
+    if (level) {
+      var badge = tag('span', level);
+      badge.className = 'lvl trunc';
+      badge.style.setProperty('--tint', colourOf(level));
+      lvl.appendChild(badge);
+    }
+    tr.appendChild(lvl);
+
+    tr.appendChild(cell(row.channel, 'ctx trunc'));
+    tr.appendChild(cell(row.file, 'ctx trunc'));
+    tr.appendChild(cell(oneLine(row.message), 'trunc'));
+
+    var detail = detailRow(row);
+
+    if (reopen && reopen[tr.dataset.k]) {
+      tr.classList.add('open');
+      detail.hidden = false;
+    }
+
+    tr.addEventListener('click', function () {
+      // Highlighting a word inside a line also lands here. Folding the line away under the
+      // selection the user just made would be maddening, so leave it alone.
+      var selection = window.getSelection();
+      if (selection && !selection.isCollapsed && String(selection).trim()) return;
+
+      var open = tr.classList.toggle('open');
+      detail.hidden = !open;
+    });
+
+    // The pair travels together: callers append a fragment, not two loose rows.
+    var pair = document.createDocumentFragment();
+    pair.appendChild(tr);
+    pair.appendChild(detail);
+    pair.head = tr;
+
+    return pair;
+  }
+
+  /** Multi-line messages (stack traces) would break the one-line layout. */
+  function oneLine(text) {
+    return String(text || '').replace(/\s*\n\s*/g, ' ⏎ ');
+  }
+
+  function detailRow(row) {
+    var tr = document.createElement('tr');
+    tr.className = 'ex-detail';
+    tr.hidden = true;
+
+    var td = document.createElement('td');
+    td.colSpan = 6;
+
+    var dl = document.createElement('dl');
+    dl.className = 'ex-kv';
+    [
+      ['time', row.date || (row.ts ? new Date(row.ts).toISOString() : '—')],
+      ['level', row.level || '—'],
+      ['channel', row.channel || '—'],
+      ['file', row.file]
+    ].forEach(function (pair) {
+      dl.appendChild(tag('dt', pair[0]));
+      dl.appendChild(tag('dd', pair[1]));
+    });
+
+    dl.appendChild(tag('dt', 'message'));
+    dl.appendChild(tag('dd', row.message));
+    td.appendChild(dl);
+
+    if (row.context && row.context !== '[]') {
+      td.appendChild(contextNode(row.context));
+    }
+
+    tr.appendChild(td);
+    return tr;
+  }
+
+  /** Context is usually JSON; pretty-print and colour it when it parses, show it raw when not. */
+  function contextNode(raw) {
+    var pre = document.createElement('pre');
+    pre.className = 'ex-json';
+
+    try {
+      highlightInto(pre, JSON.stringify(JSON.parse(raw), null, 2));
+    } catch (e) {
+      pre.textContent = raw;
+    }
+
+    return pre;
+  }
+
+  // Tokenise and append text nodes — never innerHTML, this is log content.
+  function highlightInto(target, json) {
+    var pattern = /("(?:\\.|[^\\"])*"\s*:?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g;
+    var at = 0, match;
+
+    while ((match = pattern.exec(json)) !== null) {
+      if (match.index > at) target.appendChild(document.createTextNode(json.slice(at, match.index)));
+      var token = match[0];
+      var cls = /^"/.test(token) ? (/:$/.test(token) ? 'j-key' : 'j-str')
+        : /^(true|false)$/.test(token) ? 'j-bool'
+        : 'null' === token ? 'j-null' : 'j-num';
+      var span = tag('span', token);
+      span.className = cls;
+      target.appendChild(span);
+      at = pattern.lastIndex;
+    }
+
+    if (at < json.length) target.appendChild(document.createTextNode(json.slice(at)));
+  }
+
+  function cell(text, cls) {
+    var td = document.createElement('td');
+    var inner = tag('span', text || '');
+    if (cls) { td.className = cls.replace('trunc', '').trim(); inner.className = 'trunc'; }
+    inner.style.display = 'block';
+    td.appendChild(inner);
+    return td;
+  }
+
+  var allExpanded = false;
+  function toggleAll() {
+    allExpanded = !allExpanded;
+    document.querySelectorAll('#ex-body tr.ex-row').forEach(function (tr) {
+      tr.classList.toggle('open', allExpanded);
+      if (tr.nextElementSibling) tr.nextElementSibling.hidden = !allExpanded;
+    });
+    $('ex-expand').textContent = allExpanded ? 'collapse all' : 'expand all';
+  }
+
+  // ---------------------------------------------------------------- histogram
+
+  var NS = 'http://www.w3.org/2000/svg';
+  var W = 1000, H = 170;            // viewBox units; the SVG scales to its container
+  var PAD_T = 10, PAD_B = 22;       // room for the baseline and the time labels
+
+  function svgEl(name, attrs) {
+    var el = document.createElementNS(NS, name);
+    for (var key in attrs) { el.setAttribute(key, String(attrs[key])); }
+    return el;
+  }
+
+  function draw() {
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.textContent = '';
+
+    var span = Math.max(1, state.to - state.from);
+    var floor = H - PAD_B;
+    var peak = 1;
+    state.buckets.forEach(function (b) { if (b.count > peak) peak = b.count; });
+
+    // One vertical gradient per level, so bars fade towards the baseline instead of
+    // sitting as flat blocks of colour.
+    var defs = svgEl('defs');
+    ORDER.forEach(function (level) {
+      var grad = svgEl('linearGradient', { id: 'exg-' + level, x1: '0', y1: '0', x2: '0', y2: '1' });
+      grad.appendChild(svgEl('stop', { offset: '0', 'stop-color': colourOf(level), 'stop-opacity': '1' }));
+      grad.appendChild(svgEl('stop', { offset: '1', 'stop-color': colourOf(level), 'stop-opacity': '.45' }));
+      defs.appendChild(grad);
+    });
+    svg.appendChild(defs);
+
+    drawGrid(floor, peak);
+
+    var width = Math.max(1, (state.interval / span) * W - 1.2);
+
+    state.buckets.forEach(function (bucket) {
+      var x = ((bucket.ts - state.from) / span) * W;
+      var y = floor;
+
+      // Stacked least-severe first, so errors sit on top and stay visible. Only the last
+      // segment drawn — the top of the bar — gets rounded corners.
+      var present = ORDER.filter(function (level) { return bucket.levels[level]; });
+
+      present.forEach(function (level, i) {
+        var h = (bucket.levels[level] / peak) * (floor - PAD_T);
+        y -= h;
+        var rect = svgEl('rect', {
+          x: x.toFixed(2), y: y.toFixed(2),
+          width: width.toFixed(2), height: Math.max(0.6, h).toFixed(2),
+          fill: 'url(#exg-' + level + ')',
+          rx: i === present.length - 1 ? Math.min(2, width / 2).toFixed(2) : 0
+        });
+        rect.setAttribute('class', 'ex-bar');
+        svg.appendChild(rect);
+      });
+
+      var hit = svgEl('rect', { x: x.toFixed(2), y: 0, width: width.toFixed(2), height: H, fill: 'transparent' });
+      hit.addEventListener('mousemove', function (e) { showTip(e, bucket); });
+      hit.addEventListener('mouseleave', hideTip);
+      hit.addEventListener('click', function () { zoomTo(bucket.ts, bucket.ts + state.interval); });
+      svg.appendChild(hit);
+    });
+
+    svg.appendChild(svgEl('line', {
+      x1: 0, x2: W, y1: floor, y2: floor, stroke: 'currentColor', 'stroke-opacity': '.3'
+    }));
+
+    drawTimeAxis(span);
+  }
+
+  function drawGrid(floor, peak) {
+    [0.5, 1].forEach(function (ratio) {
+      var y = floor - ratio * (floor - PAD_T);
+      svg.appendChild(svgEl('line', {
+        x1: 0, x2: W, y1: y, y2: y, stroke: 'currentColor', 'stroke-opacity': '.08', 'stroke-dasharray': '3 5'
+      }));
+      var text = svgEl('text', { x: 4, y: y - 3, fill: 'currentColor', 'fill-opacity': '.35', 'font-size': '10' });
+      text.textContent = Math.round(peak * ratio).toLocaleString();
+      svg.appendChild(text);
+    });
+  }
+
+  function drawTimeAxis(span) {
+    var ticks = 6;
+    for (var i = 0; i <= ticks; i++) {
+      var x = (i / ticks) * W;
+      var text = svgEl('text', {
+        x: Math.min(W - 2, Math.max(2, x)), y: H - 6,
+        fill: 'currentColor', 'fill-opacity': '.4', 'font-size': '10',
+        'text-anchor': i === 0 ? 'start' : (i === ticks ? 'end' : 'middle')
+      });
+      text.textContent = fmtClock(state.from + (i / ticks) * span);
+      svg.appendChild(text);
+    }
+  }
+
+  function showTip(event, bucket) {
+    tip.textContent = '';
+    var head = document.createElement('b');
+    head.textContent = fmtClock(bucket.ts) + '  ·  ' + bucket.count + ' rec';
+    tip.appendChild(head);
+
+    ORDER.slice().reverse().forEach(function (level) {
+      if (!bucket.levels[level]) return;
+      var line = document.createElement('div');
+      line.className = 'r';
+      var left = document.createElement('span');
+      var dot = document.createElement('i');
+      dot.style.background = colourOf(level);
+      left.appendChild(dot);
+      left.appendChild(document.createTextNode(level));
+      line.appendChild(left);
+      line.appendChild(tag('em', String(bucket.levels[level])));
+      tip.appendChild(line);
+    });
+
+    tip.hidden = false;
+    var box = svg.getBoundingClientRect();
+    var left = event.clientX - box.left + 14;
+    tip.style.left = Math.min(box.width - tip.offsetWidth - 6, left) + 'px';
+    tip.style.top = '6px';
+  }
+
+  function hideTip() { tip.hidden = true; }
+
+  // --- Drag to zoom: the gesture people expect from Grafana / VictoriaMetrics.
+  var drag = null, band = null;
+
+  function msAt(event) {
+    var box = svg.getBoundingClientRect();
+    var ratio = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    return state.from + ratio * (state.to - state.from);
+  }
+
+  svg.addEventListener('mousedown', function (e) {
+    drag = msAt(e);
+    band = svgEl('rect', { y: 0, height: H, fill: 'currentColor', opacity: '.12', rx: 3 });
+    svg.appendChild(band);
+  });
+
+  svg.addEventListener('mousemove', function (e) {
+    if (drag === null || !band) return;
+    var span = state.to - state.from;
+    var a = ((Math.min(drag, msAt(e)) - state.from) / span) * W;
+    var b = ((Math.max(drag, msAt(e)) - state.from) / span) * W;
+    band.setAttribute('x', a.toFixed(2));
+    band.setAttribute('width', Math.max(0, b - a).toFixed(2));
+  });
+
+  window.addEventListener('mouseup', function (e) {
+    if (drag === null) return;
+    var a = Math.min(drag, msAt(e)), b = Math.max(drag, msAt(e));
+    drag = null;
+    if (band) { band.remove(); band = null; }
+    // A click rather than a drag: the bucket hit area handles it.
+    if (b - a > 1000) zoomTo(Math.round(a), Math.round(b));
+  });
+
+  svg.addEventListener('dblclick', function () {
+    var span = (state.to - state.from) * 2;
+    var mid = (state.from + state.to) / 2;
+    zoomTo(Math.round(mid - span / 2), Math.round(mid + span / 2));
+  });
+
+  function zoomTo(from, to) {
+    if (to - from < 1000) return;
+    // Both ends are now pinned: you asked for a slice of the past, not for the last N minutes.
+    state.follow = false;
+    state.from = from;
+    state.to = to;
+    hideTip();
+    stopLive();
+    refresh();
+  }
+
+  // ---------------------------------------------------------------- live tail
+
+  /**
+   * @param fresh true when the user just pressed Live, false when the stream is reconnecting
+   *              after the server's timeout — a reconnect must not wipe what has arrived.
+   */
+  function startLive(fresh) {
+    closeStream();
+    state.live = true;
+    $('ex-live').classList.add('on');
+    $('ex-refresh').disabled = true;   // the stream is already doing it
+
+    if (fresh) {
+      // Start from an empty table. The whole point of pressing Live is to watch one specific
+      // thing happen, and finding it among a page of history is exactly the work being avoided.
+      clearRows();
+      state.seen = Object.create(null);
+      state.polledTo = Date.now();
+    }
+
+    var source = new EventSource(BASE + '/stream?' + params());
+    state.source = source;
+
+    source.addEventListener('row', function (e) { appendLive(JSON.parse(e.data)); });
+    source.addEventListener('bye', function () { startLive(false); });   // server closed on its timeout
+    source.onerror = function () {
+      // SSE blocked (proxy, buffering…): fall back to polling so Live still works.
+      source.close();
+      if (state.live) { state.source = null; pollLive(); }
+    };
+  }
+
+  function clearRows() {
+    $('ex-body').textContent = '';
+    allExpanded = false;
+    $('ex-expand').textContent = 'expand all';
+    countRows();
+  }
+
+  // A record just landed: slide it in, tint it by level, and wash the page in that colour for a
+  // moment. That flash is the whole point of a live view — you see a burst of errors without
+  // reading a single line.
+  function appendLive(row) {
+    // The poller re-reads an overlapping window on purpose (a record written between two polls
+    // must not be missed), so the same line can arrive twice. Show it once.
+    var key = keyOf(row);
+    if (state.seen[key]) return;
+    state.seen[key] = true;
+
+    var body = $('ex-body');
+    var pair = rowNode(row);
+    var tr = pair.head;
+    var tint = colourOf((row.level || 'other').toLowerCase());
+
+    tr.classList.add('ex-new');
+    tr.style.setProperty('--tint', tint);
+    body.insertBefore(pair, body.firstChild);
+
+    flash(tint);
+
+    // Keep the DOM bounded: a live tail can run for a long time. Rows come in pairs
+    // (the line and its folded detail), so they are dropped in pairs too.
+    var ceiling = parseInt($('ex-limit').value, 10) * 2;
+    while (body.children.length > ceiling) {
+      body.removeChild(body.lastElementChild);
+      if (body.lastElementChild) body.removeChild(body.lastElementChild);
+    }
+
+    countRows();
+  }
+
+  var flashAt = 0;
+  function flash(tint) {
+    // Under a burst, restarting the animation on every line would strobe. Once every 400 ms.
+    var now = Date.now();
+    if (now - flashAt < 400) return;
+    flashAt = now;
+    pulse.style.setProperty('--tint', tint);
+    pulse.classList.remove('go');
+    void pulse.offsetWidth;        // force a reflow so the animation really restarts
+    pulse.classList.add('go');
+  }
+
+  /**
+   * Fallback when SSE cannot get through: poll for what was written since the last round.
+   *
+   * It appends rather than re-rendering. The old version reloaded the whole table every two
+   * seconds — which moved the time window under the chart and, worse, folded shut any record the
+   * user had just expanded.
+   */
+  var pollTimer = null;
+  function pollLive() {
+    if (!state.live) return;
+
+    var now = Date.now();
+    // Overlap the window by a second: a record written mid-poll must not fall between rounds.
+    fetchJson('/query', { from: state.polledTo - 1000, to: now, limit: 500 })
+      .then(function (res) {
+        if (res.ok) {
+          // The endpoint answers newest first; insert oldest first so the order holds at the top.
+          res.body.rows.slice().reverse().forEach(appendLive);
+          state.polledTo = now;
+        }
+      })
+      .catch(function () { /* a failed poll is not worth interrupting the stream for */ })
+      .then(function () { if (state.live) pollTimer = setTimeout(pollLive, 2000); });
+  }
+
+  function closeStream() {
+    if (state.source) { state.source.close(); state.source = null; }
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function stopLive() {
+    state.live = false;
+    $('ex-live').classList.remove('on');
+    $('ex-refresh').disabled = false;
+    closeStream();
+  }
+
+  // A filter changed while the stream is open: the server-side filter is baked into the SSE
+  // request, so the stream has to be reopened for the change to apply.
+  // Changing the query or a filter while live means "watch this instead", so the capture starts
+  // over — keeping rows that no longer match what is on screen would be a lie.
+  function restartIfLive() { if (state.live) startLive(true); }
+
+  // ---------------------------------------------------------------- events
+
+  $('ex-run').addEventListener('click', run);
+  ['ex-grep', 'ex-q'].forEach(function (id) {
+    $(id).addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); run(); }
+    });
+    // The little ✕ of a search input fires `search`, not `keydown`.
+    $(id).addEventListener('search', run);
+  });
+  $('ex-grep-re').addEventListener('change', function () { if ($('ex-grep').value) run(); });
+
+  function run() { restartIfLive(); refresh(); }
+
+  // ---- LogQL disclosure -------------------------------------------------
+  // Opened on load when a query came in from the URL: a filter you cannot see is a filter you
+  // will spend ten minutes not finding.
+  function showLogql(open) {
+    $('ex-logql').hidden = !open;
+    $('ex-logql-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) $('ex-q').focus();
+  }
+
+  $('ex-logql-toggle').addEventListener('click', function () {
+    showLogql($('ex-logql').hidden);
+  });
+
+  if ($('ex-q').value) showLogql(true);
+
+  // ---- grep what you highlighted ----------------------------------------
+  // Select a request id, a SQL fragment, an exception class inside the table and search for it
+  // without retyping it. The popup is placed over the selection and dismissed by the next click.
+  var pop = $('ex-sel'), popText = $('ex-sel-text'), pending = '';
+
+  document.addEventListener('mouseup', function (e) {
+    // Let the click on the popup's own button through — hiding it here would eat the click.
+    if (pop.contains(e.target)) return;
+
+    var selection = window.getSelection();
+    var text = selection ? String(selection).trim() : '';
+    var body = $('ex-body');
+
+    if (!text || !selection.rangeCount || !body.contains(selection.anchorNode)) {
+      pop.hidden = true;
+      return;
+    }
+
+    // One line is a search term; half a stack trace is not.
+    if (text.length > 200 || text.indexOf('\n') !== -1) { pop.hidden = true; return; }
+
+    pending = text;
+    popText.textContent = text;
+
+    var rect = selection.getRangeAt(0).getBoundingClientRect();
+    pop.hidden = false;
+    pop.style.left = Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8,
+      rect.left + window.scrollX + rect.width / 2 - pop.offsetWidth / 2)) + 'px';
+    pop.style.top = (rect.top + window.scrollY - pop.offsetHeight - 8) + 'px';
+  });
+
+  $('ex-sel-grep').addEventListener('click', function () {
+    $('ex-grep').value = pending;
+    // Highlighted text is a literal, never a pattern — `$id = 4 (foo)` must not become a regex.
+    $('ex-grep-re').checked = false;
+    pop.hidden = true;
+    window.getSelection().removeAllRanges();
+    run();
+  });
+
+  document.addEventListener('keydown', function (e) { if ('Escape' === e.key) pop.hidden = true; });
+  window.addEventListener('scroll', function () { pop.hidden = true; }, { passive: true });
+
+  $('ex-live').addEventListener('click', function () {
+    if (state.live) {
+      // Leaving live puts the window back the way it was, so the history is one click away again.
+      stopLive();
+      refresh();
+    } else {
+      startLive(true);
+    }
+  });
+
+  $('ex-clear-rows').addEventListener('click', clearRows);
+  $('ex-self').addEventListener('change', run);
+
+  $('ex-limit').addEventListener('change', function () {
+    // While live, the limit is only a ceiling on the DOM; reloading would clear the capture.
+    if (!state.live) refresh();
+  });
+
+  $('ex-clear').addEventListener('click', clearFilters);
+  $('ex-expand').addEventListener('click', toggleAll);
+  $('ex-wrap').addEventListener('click', function () {
+    var on = document.querySelector('.ex-rows').classList.toggle('wrap');
+    this.textContent = on ? 'no wrap' : 'wrap';
+  });
+
+  $('ex-span').addEventListener('change', function () { follow(parseInt(this.value, 10)); });
+
+  // Back to the last range picked from the select — not to the zoomed span the select
+  // is currently showing, which would reset to nothing.
+  $('ex-reset').addEventListener('click', function () { follow(state.preset); });
+
+  /** Re-enter follow mode over the last `span` milliseconds. */
+  function follow(span) {
+    state.follow = true;
+    state.span = span;
+    state.to = Date.now();
+    state.from = state.to - span;
+    refresh();
+  }
+
+  // Nothing pins the end of the window, so "refresh" genuinely means "and anything since".
+  $('ex-refresh').addEventListener('click', function () {
+    if (state.live) return;   // the stream is already doing it
+    refresh();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    var span = state.to - state.from;
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
+    // Panning pins the window: you are looking at a particular stretch of the past.
+    state.follow = false;
+    var step = (e.key === 'ArrowLeft' ? -1 : 1) * span / 4;
+    state.from += step;
+    state.to += step;
+    refresh();
+  });
+
+  refresh();
+})();
+</script>
+{% endverbatim %}
+{% endblock %}

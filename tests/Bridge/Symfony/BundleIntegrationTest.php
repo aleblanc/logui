@@ -39,6 +39,23 @@ final class BundleIntegrationTest extends TestCase
         self::assertStringContainsString('LogUI', (string) $response->getContent());
     }
 
+    /** Searching the logs is what people open LogUI for, so the explorer is the landing page. */
+    public function test_the_landing_page_is_the_log_explorer(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('id="explore"', $html);
+        self::assertStringContainsString('/_logui/explore', $html, 'the page points at its own JSON endpoints');
+    }
+
+    public function test_the_request_list_keeps_its_own_url(): void
+    {
+        $response = $this->kernel->handle(Request::create('/_logui/requests', 'GET'));
+
+        self::assertSame(200, $response->getStatusCode());
+        self::assertStringContainsString('profils', (string) $response->getContent());
+    }
+
     public function test_an_app_request_is_captured_and_visible_in_the_ui(): void
     {
         // Drive a real app request through the kernel. It 404s (no such route), which still flows
@@ -49,7 +66,7 @@ final class BundleIntegrationTest extends TestCase
         $this->kernel->terminate($appRequest, $appResponse);
 
         // Now read it back through the UI.
-        $uiResponse = $this->kernel->handle(Request::create('/_logui', 'GET'));
+        $uiResponse = $this->kernel->handle(Request::create('/_logui/requests', 'GET'));
         $html = (string) $uiResponse->getContent();
 
         self::assertSame(200, $uiResponse->getStatusCode());

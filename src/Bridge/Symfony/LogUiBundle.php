@@ -7,6 +7,7 @@ namespace Aleblanc\LogUi\Bridge\Symfony;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CommandProfilerListener;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CurrentProfile;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\RequestProfilerListener;
+use Aleblanc\LogUi\Bridge\Symfony\Controller\ExploreController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\HealthController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\RawLogController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\UiController;
@@ -20,8 +21,11 @@ use Aleblanc\LogUi\Bridge\Symfony\Security\UiAuthCookieListener;
 use Aleblanc\LogUi\Bridge\Symfony\Telemetry\TelemetryLogger;
 use Aleblanc\LogUi\Core\Capture\ProfileContextFactory;
 use Aleblanc\LogUi\Core\Capture\Redactor;
+use Aleblanc\LogUi\Core\Query\LogExplorer;
+use Aleblanc\LogUi\Core\Query\LogQL\Parser as LogQLParser;
 use Aleblanc\LogUi\Core\Stats\MemoryProbe;
 use Aleblanc\LogUi\Core\Stats\SystemClock;
+use Aleblanc\LogUi\Core\Storage\MergedLogReader;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
@@ -175,6 +179,23 @@ final class LogUiBundle extends AbstractBundle
             ->args([new Reference('logui.discovery'), [new Reference('logger')], $config['external_logs'], $config['log_dirs'], $config['discover_monolog'], '%kernel.project_dir%']);
         $services->set(RawLogController::class)
             ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
+            ->public()
+            ->tag('controller.service_arguments');
+
+        // Log explorer: LogQL-lite over the merged sources, plus its JSON endpoints.
+        $services->set('logui.merged_reader', MergedLogReader::class)
+            ->args([new Reference('logui.plainreader')]);
+        $services->set('logui.logql_parser', LogQLParser::class);
+        $services->set('logui.explorer', LogExplorer::class)
+            ->args([new Reference('logui.merged_reader'), new Reference('logui.logql_parser')]);
+        $services->set(ExploreController::class)
+            ->args([
+                new Reference('logui.rawlog_sources'),
+                new Reference('logui.explorer'),
+                new Reference('twig'),
+                new Reference('logui.guard'),
+                $config['ui_path'],
+            ])
             ->public()
             ->tag('controller.service_arguments');
 

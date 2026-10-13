@@ -4,7 +4,7 @@
 {% set mem = (profile.memStartMb is not null and profile.memEndMb is not null)
     ? profile.memStartMb|number_format(1) ~ '→' ~ profile.memEndMb|number_format(1) ~ ' MB (peak ' ~ profile.memPeakMb|number_format(1) ~ ')'
     : profile.memPeakMb|number_format(1) ~ ' MB peak' %}
-<p><a href="{{ ui_path }}">← back</a></p>
+<p><a href="{{ ui_path }}/requests">← back</a></p>
 <h2>{{ profile.label }}</h2>
 <p class="ctx">
     {{ profile.type.value }}

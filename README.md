@@ -12,6 +12,14 @@ reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 
 **No separate store. No new database. No front-end build.**
 
+![LogUI — log explorer](screenshots/explore.png)
+*The landing page: search box with an opt-in `regexp` mode, zoomable histogram stacked by level,
+a fields panel built from what the query actually matched, and a live tail. Records are one dense
+monospace line; click one to unfold every field.*
+
+![LogUI — log explorer, light theme](screenshots/explore-light.png)
+*Same view in the light theme. Three themes ship (dark / light / sepia), each with its own backdrop.*
+
 ![LogUI — request dashboard](screenshots/requests.png)
 *Request list: clickable stats, HTTP + console profiles, method / level / SQL columns, themes.*
 
@@ -28,6 +36,17 @@ reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 - **Telemetry appended to a log file** (`LOGUI@` sentinel), read back by the UI — no database. Written **directly** (not through Monolog), so it works in prod regardless of `fingers_crossed`/`rotating_file` handlers. Reads are **tail-bounded** (multi-GB logs are fine).
 - **Request detail** shows that request's log records (all channels, even ones your file handlers drop), filterable by level/channel.
 - **Raw `.log` viewer** (Files tab): multi-format parser (Monolog line **and JSON** formatters, Symfony console logs, nginx access/error, ANSI-stripped) + auto-discovery of Monolog handler files + a scan of your log directories.
+- **Log explorer** — *the landing page* (`/_logui`): a **search box**, a **zoomable time histogram** and a **live tail**, over **one file or all of them at once**.
+  - **Search first**: type `payment failed` and get the lines that say so — **case-insensitive**, message *and* context, regex syntax treated as literal text. A **`regexp` checkbox** turns the same box into a pattern search when you want one. **Select any text in the logs** and a one-click *Grep* button offers to search for it.
+  - **LogQL is opt-in**, folded behind a link under the search box: `{file="var/log/dev.log", level="error"} |= "payment" != "healthcheck" | json | status >= 500` — stream selector (`=`, `!=`, `=~`, `!~`), line filters (`|=`, `!=`, `|~`, `!~`), `| json`, and label filters (`| status >= 500`).
+  - **Fields panel** (left): one collapsible group per field — `level`, `channel`, `file` — listing the values that actually occur with their counts and share of the matches. Tick to filter. Built from the current result set, not a hard-coded list, and ANDed with the query instead of rewriting it.
+  - **Expandable records**: one dense monospace line each; click to unfold every field, with the context pretty-printed and syntax-highlighted. `expand all`, `wrap`, `clear` and a **row-count select** (50 → 1000, default 100) in the panel header. Expanding survives a refresh, including while tailing.
+  - **Live starts clean**: pressing *Live* empties the list so the call you are about to make is the only thing on screen; leaving it reloads the window's history.
+  - Histogram: bars stacked by level with per-level gradients, **drag to zoom**, click a bar to jump to it, double-click to zoom out, `←/→` to pan. KPI cards above it (records, errors, warnings, rate, query time).
+  - Live tail: Server-Sent Events, **rotation-safe**, with automatic fallback to polling when a proxy blocks SSE. An arriving record **slides in tinted by its level** and washes the page in that colour — a burst of errors is visible without reading a line. Honours `prefers-reduced-motion`.
+  - Ranged reads use a **binary search on byte offsets**: pulling one hour out of a 261 MB file takes **~120 ms instead of ~35 s**, reading 0.3 % of it — still no index, still no database.
+  - Every query runs under a **wall-clock budget** (5 s) and a row cap; anything cut short comes back flagged `truncated` rather than tying up a worker.
+  - The current query, window and filters live in the URL, so a view can be pasted to a colleague.
 - **JSON-aware messages**: a message that is *text followed by JSON* is detected and the JSON is **pretty-printed, syntax-highlighted and collapsed to ~2 lines** with an expand/collapse toggle (client-side, in both the request detail records and the raw log viewer).
 - **Dashboard UI**: clickable stats (general counts), method column, filters (level/type/method/search), pagination (100/page), and **dark / light / sepia** themes.
 - **Health tab** *(read-only host metrics)*: uptime, load, memory, disks, network interfaces, **top processes** (`ps`), optional CPU temperature/throttle (Raspberry Pi), `vnstat` bandwidth, Docker containers and configured systemd services. Every probe **degrades gracefully** — anything unavailable on the host is simply not shown.
@@ -77,7 +96,8 @@ real secret in `.env.local`, which isn't committed).
 `monolog.yaml` edit). Disable it with `log_ui.capture_monolog: false` (e.g. in production); see
 [Configuration](#configuration).
 
-**Open the UI at `/_logui`** — the default path (configurable via `log_ui.ui_path`). It's open in
+**Open the UI at `/_logui`** — the default path (configurable via `log_ui.ui_path`). It lands on the
+**log explorer**; the captured requests are one tab over, at `/_logui/requests`. It's open in
 `dev`/`test`; in `prod` it's fail-closed behind `LOGUI_PASSWORD` (or delegate to your firewall, see
 [Access control](#access-control-in-production)).
 
@@ -125,11 +145,23 @@ curl -H "X-LogUI-Password: <your-password>" https://example.com/_logui
 https://example.com/_logui?_pw=<your-password>
 ```
 
-On a successful login LogUI sets a **session cookie** (`logui_auth`, HttpOnly, derived from the
-password via HMAC — never the password itself), so you only supply `?_pw=` once and **navigation
-then works without it**. The cookie lasts for the browser session and invalidates if the password
-changes. For a fully integrated production console (your own login, roles), `delegate` is still the
-cleaner choice.
+On a successful login LogUI sets a **session cookie** (`logui_auth`, HttpOnly, SameSite=Lax, scoped
+to `ui_path`, signed with an HMAC keyed on the password — the cookie never carries the password
+itself). The token embeds a server-enforced 8 h expiry covered by the signature, so it cannot be
+extended by tampering, and changing the password invalidates every outstanding token. You supply
+`?_pw=` once; **navigation and the explorer's XHR calls then work without it**.
+
+Two things worth knowing before you rely on `password` in production:
+
+- **There is no rate limiting on the password.** LogUI keeps no store, so it has nowhere to count
+  attempts. If the UI is reachable from the internet, put a limiter in front of it (nginx
+  `limit_req`, your WAF) or use `delegate`.
+- **A live tail holds one PHP worker** for up to 5 minutes per open tab (Server-Sent Events). On a
+  small php-fpm pool, a handful of forgotten LogUI tabs can starve the application. Size the pool
+  accordingly, or keep the UI off the public internet.
+
+For a fully integrated production console (your own login, roles), `delegate` is still the cleaner
+choice.
 
 **`access: delegate`** (recommended in prod) — LogUI gates nothing and trusts your own security.
 You log in with your normal app session, and navigation just works. Protect the route in
