@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aleblanc\LogUi\Tests\Bridge\Symfony;
 
 use Aleblanc\LogUi\Bridge\Symfony\LogUiBundle;
+use Aleblanc\LogUi\Core\Query\LogExplorer;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Config\Definition\Processor;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -42,6 +43,16 @@ final class ConfigurationTest extends TestCase
     public function test_access_defaults_to_password(): void
     {
         self::assertSame('password', $this->process()['access']);
+    }
+
+    /**
+     * The 5 s ceiling is a backstop against one user tying up a worker, but it is also what makes
+     * a wide sweep on a slow disk come back partial — so it has to be raisable without forking.
+     */
+    public function test_the_query_budget_defaults_to_five_seconds_and_is_tunable(): void
+    {
+        self::assertSame(LogExplorer::DEFAULT_BUDGET_SECONDS, $this->process()['query_budget_seconds']);
+        self::assertSame(30.0, $this->process(['query_budget_seconds' => 30])['query_budget_seconds']);
     }
 
     public function test_an_explicit_password_overrides_the_default(): void

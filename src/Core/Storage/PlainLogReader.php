@@ -304,6 +304,10 @@ final class PlainLogReader
      */
     private function classify(string $line): ?array
     {
+        if (str_starts_with($line, TelemetryReader::SENTINEL) && null !== ($telemetry = $this->classifyTelemetry($line))) {
+            return $telemetry;
+        }
+
         if (str_starts_with($line, '{') && null !== ($json = $this->classifyJson($line))) {
             return $json;
         }
@@ -379,6 +383,42 @@ final class PlainLogReader
         }
 
         return null;
+    }
+
+    /**
+     * LogUI's own telemetry lines: `LOGUI@{"id":…,"at":"<iso8601>",…}`.
+     *
+     * The explorer never *shows* these — they belong to the Requests tab — but they must still be
+     * **datable**, and that is not cosmetic. In production the telemetry file is the application's
+     * own log, and it can be mostly telemetry. A line with no timestamp is invisible to the binary
+     * search that locates a time range, and worse, it never satisfies the "we have gone past the
+     * end of the window" test that stops the scan. Both degrade to reading the file whole: on a
+     * 1 GB prod.log that is a gigabyte read per request, twice per page.
+     *
+     * Only the date is recovered. Everything else stays as the raw line, which is what the
+     * telemetry filter downstream matches on.
+     *
+     * @return array{monolog:bool,row:Row}|null
+     */
+    private function classifyTelemetry(string $line): ?array
+    {
+        // Hand-extracted rather than json_decode()'d: these lines carry a whole profile, often
+        // several kilobytes of records, and the seeker only ever needs the date.
+        if (!preg_match('/"at"\s*:\s*"([^"]{10,40})"/', $line, $m)) {
+            return null;
+        }
+
+        return ['monolog' => false, 'row' => [
+            'date' => $m[1],
+            'ts' => null,
+            'ts_inferred' => false,
+            'file' => '',
+            'channel' => 'logui',
+            'level' => 'info',
+            'message' => $line,
+            'context' => null,
+            'extra' => null,
+        ]];
     }
 
     /**

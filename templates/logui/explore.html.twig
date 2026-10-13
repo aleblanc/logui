@@ -628,9 +628,12 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     box.hidden = !h.truncated;
     if (!h.truncated) { box.textContent = ''; return; }
 
+    // Only the two things that reduce *reading* are offered. A search term does not help: the
+    // budget is wall-clock and the cost is in the bytes read, not in the matching — the same
+    // file is walked either way.
     box.textContent = '⚠ Partial result — the query budget ran out after ' +
       Math.round(h.tookMs / 100) / 10 + ' s, so the oldest part of this window was not read. ' +
-      'Narrow the range, pick fewer files, or add a search term.';
+      'Narrow the time range, or untick some files in the Fields panel.';
   }
 
   function pct(n, total) {

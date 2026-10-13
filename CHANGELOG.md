@@ -52,6 +52,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **14-day and 28-day ranges** in the time select.
 - **A partial result now says so.** Wide windows can outrun the query budget; the chart shows a
   warning naming the elapsed time and what to narrow, instead of quietly showing a shorter window.
+- **`query_budget_seconds`** makes that budget configurable (default 5.0). It is a backstop against
+  one user tying up a worker, so it stays low by default — but a slow disk sweeping weeks across
+  many files legitimately needs more.
 
 ### Changed
 - **The log explorer is now the landing page.** `{ui}` renders the explorer; the captured-request
@@ -71,6 +74,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   downloaded) at 11.5 px; the rest of the UI keeps the sans-serif.
 
 ### Fixed
+- **The explorer was unusable on a production log file.** LogUI's own telemetry lines
+  (`LOGUI@{…}`) carried no parseable date, and in production the telemetry file *is* the
+  application's log — often almost entirely telemetry. An undated line is invisible to the binary
+  search that locates a time range, and it never satisfies the "past the end of the window" test
+  that stops the scan, so both degraded to reading the file whole: a gigabyte read per request,
+  twice per page load. The date is now recovered from the payload's `at` field. On a 53 MB
+  telemetry file, a one-day window went from reading 100 % of it to **2.1 %** (one hour: 0.2 %).
+  The lines are still hidden from the explorer and the Files tab, exactly as before.
 - The live tail's polling fallback (used when a proxy blocks SSE) reloaded the whole table every
   two seconds, which **folded shut any record the user had just expanded** and moved the time
   window under the chart. It now appends only what was written since the last round, de-duplicated

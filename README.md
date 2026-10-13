@@ -115,6 +115,7 @@ All keys are optional with sensible defaults (`config/packages/log_ui.yaml`):
 log_ui:
     telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'  # existing log to write/read telemetry
     slow_query_ms: 50                  # SQL slower than this is flagged
+    query_budget_seconds: 5.0          # wall-clock ceiling for one explorer query (see below)
     max_records_per_profile: 1000      # cap on records captured per request (bounds line size)
     ui_path: /_logui
     access: password                   # password (default) | delegate
@@ -127,6 +128,27 @@ log_ui:
     redact_keys: [password, passwd, secret, token, authorization, api_key]
     health_services: []                # systemd units shown on the Health tab (e.g. [nginx, mariadb, php8.4-fpm])
 ```
+
+### "Partial result" in the explorer
+
+Each explorer query runs under a wall-clock ceiling (`query_budget_seconds`, **5 s** by default).
+When it runs out, the scan stops where it is and the chart says so: everything shown is real, but
+the **oldest part of the window was not read**.
+
+It is a backstop, not a tuning knob — without it one person sweeping a month across fifty files
+can hold a PHP worker for minutes. That is why the default is low.
+
+If you hit it legitimately (a slow disk, many files, 14- or 28-day ranges), you have three options,
+in order of cheapness:
+
+1. **Narrow the time range** — ranged reads binary-search the byte offsets, so a shorter window
+   genuinely reads fewer bytes.
+2. **Untick files** in the Fields panel — fewer files to walk.
+3. **Raise `query_budget_seconds`** — do this knowing it is a denial-of-service ceiling you are
+   lifting. Fine behind `delegate` on an internal network; think twice if the UI is public.
+
+Adding a search term does **not** help: the budget is wall-clock and the cost is in the bytes read,
+not in the matching — the same file is walked either way.
 
 ### Access control in production
 

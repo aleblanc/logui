@@ -83,6 +83,13 @@ final class LogUiBundle extends AbstractBundle
                 ->end()
                 ->integerNode('max_records_per_profile')->defaultValue(1000)->end()
                 ->floatNode('slow_query_ms')->defaultValue(50.0)->end()
+                ->floatNode('query_budget_seconds')
+                    ->defaultValue(LogExplorer::DEFAULT_BUDGET_SECONDS)
+                    // `query_budget_seconds: 30` is an int to the Config component; cast so the
+                    // service always receives a float, whatever the YAML looked like.
+                    ->beforeNormalization()->always(static fn (mixed $v): float => (float) $v)->end()
+                    ->info('Wall-clock ceiling for one explorer query. A backstop against a single user tying up a worker, so it is deliberately low — raise it on a slow disk, or when you routinely sweep weeks across many files. Anything cut short comes back marked truncated, and the UI says so.')
+                ->end()
                 ->scalarNode('ui_path')->defaultValue('/_logui')->end()
                 ->enumNode('access')
                     ->values(['password', 'delegate'])
@@ -187,7 +194,11 @@ final class LogUiBundle extends AbstractBundle
             ->args([new Reference('logui.plainreader')]);
         $services->set('logui.logql_parser', LogQLParser::class);
         $services->set('logui.explorer', LogExplorer::class)
-            ->args([new Reference('logui.merged_reader'), new Reference('logui.logql_parser')]);
+            ->args([
+                new Reference('logui.merged_reader'),
+                new Reference('logui.logql_parser'),
+                $config['query_budget_seconds'],
+            ]);
         $services->set(ExploreController::class)
             ->args([
                 new Reference('logui.rawlog_sources'),
