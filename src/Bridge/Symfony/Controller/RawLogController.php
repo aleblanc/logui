@@ -29,7 +29,12 @@ final class RawLogController
             return $this->error('Forbidden', 403);
         }
 
-        return $this->render('logs', 'Log files', ['sources' => $this->sources->all()]);
+        $sources = $this->sources->all();
+
+        return $this->render('logs', 'Log files', [
+            'sources' => $sources,
+            'total_size' => RawLogSources::humanSize((int) array_sum(array_column($sources, 'size'))),
+        ]);
     }
 
     public function view(Request $request): Response

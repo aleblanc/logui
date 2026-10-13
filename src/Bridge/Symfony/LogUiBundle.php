@@ -105,6 +105,11 @@ final class LogUiBundle extends AbstractBundle
                     ->defaultValue(['/_wdt', '/_profiler'])
                     ->info('Request path prefixes never profiled (the LogUI UI path is always added).')
                 ->end()
+                ->arrayNode('ignore_commands')
+                    ->scalarPrototype()->end()
+                    ->defaultValue([])
+                    ->info("Console commands never profiled. Shell wildcards are supported, so 'scheduler:*' or 'messenger:consume' work. A command that runs every minute writes a telemetry line every minute, which is how a log file reaches a gigabyte.")
+                ->end()
                 ->booleanNode('capture_monolog')
                     ->defaultTrue()
                     ->info('Auto-wire the LogUI handler onto every Monolog channel (no manual monolog.yaml edit). Set false (or via env) to disable capture, e.g. in prod.')
@@ -156,7 +161,13 @@ final class LogUiBundle extends AbstractBundle
             ->args([new Reference('logui.current'), new Reference('logui.factory'), new Reference('logui.telemetry'), array_merge([$config['ui_path']], $config['ignore_paths'])])
             ->tag('kernel.event_subscriber');
         $services->set('logui.listener.command', CommandProfilerListener::class)
-            ->args([new Reference('logui.current'), new Reference('logui.factory'), new Reference('logui.telemetry')])
+            ->args([
+                new Reference('logui.current'),
+                new Reference('logui.factory'),
+                new Reference('logui.telemetry'),
+                null,   // IdGenerator — the default random one
+                $config['ignore_commands'],
+            ])
             ->tag('kernel.event_subscriber');
 
         // Public so monolog config can reference it: handlers: { logui: { type: service, id: ... } }.

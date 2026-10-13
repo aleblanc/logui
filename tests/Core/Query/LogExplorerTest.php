@@ -184,6 +184,42 @@ final class LogExplorerTest extends TestCase
         self::assertSame(1_800_000, $explorer->bucketWidth(0, 86_400_000));    // 24 h   → 30 min
     }
 
+    /**
+     * In production the telemetry file *is* the application's log, so a user can pick a
+     * gigabyte-sized file in the Fields panel and get an empty list. The count is what lets the
+     * UI say why instead of looking broken.
+     */
+    public function test_skipped_telemetry_is_counted_so_an_empty_list_can_explain_itself(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'logui_telemetry_').'.log';
+        $this->files[] = $path;
+
+        $base = strtotime(self::BASE.' UTC');
+        $lines = [];
+        for ($i = 0; $i < 3; ++$i) {
+            $lines[] = 'LOGUI@'.json_encode([
+                'id' => sprintf('%016x', $i),
+                'type' => 'cli',
+                'at' => gmdate('Y-m-d\TH:i:sP', $base + $i),
+                'label' => 'scheduler:run',
+            ]);
+        }
+        file_put_contents($path, implode("\n", $lines)."\n");
+
+        $histogram = $this->explorer()->histogram(['prod.log' => $path], '', $this->at(0), $this->at(60));
+
+        self::assertSame(0, $histogram['matched'], 'telemetry is never shown in the explorer');
+        self::assertSame(3, $histogram['telemetry'], 'but it is counted, so the UI can explain the emptiness');
+    }
+
+    public function test_a_file_with_real_records_reports_no_telemetry(): void
+    {
+        $histogram = $this->explorer()->histogram($this->sources(), '', $this->at(0), $this->at(120));
+
+        self::assertSame(0, $histogram['telemetry']);
+        self::assertSame(5, $histogram['matched']);
+    }
+
     public function test_tail_from_reads_only_what_was_appended(): void
     {
         $path = $this->makeFile('live', [[0, 'info', 'before']]);

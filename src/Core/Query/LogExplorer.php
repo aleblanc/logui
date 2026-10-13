@@ -121,7 +121,7 @@ final class LogExplorer
      *
      * @param array<string,string> $sources
      *
-     * @return array{buckets:list<array{ts:int,count:int,levels:array<string,int>}>,facets:array{level:array<string,int>,channel:array<string,int>,file:array<string,int>},interval:int,from:int,to:int,total:int,matched:int,truncated:bool,tookMs:float}
+     * @return array{buckets:list<array{ts:int,count:int,levels:array<string,int>}>,facets:array{level:array<string,int>,channel:array<string,int>,file:array<string,int>},interval:int,from:int,to:int,total:int,matched:int,telemetry:int,truncated:bool,tookMs:float}
      */
     public function histogram(array $sources, string $logql, int $fromMs, int $toMs, ?Selection $selection = null): array
     {
@@ -139,8 +139,9 @@ final class LogExplorer
         $seen = 0;
         $truncated = false;
         $deadline = $started + $this->budgetSeconds;
+        $telemetry = 0;
 
-        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs)) as $row) {
+        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs, $telemetry)) as $row) {
             if (0 === ++$seen % self::BUDGET_CHECK_EVERY && microtime(true) > $deadline) {
                 // Counting stops here; the chart shows what was measured and says so.
                 $truncated = true;
@@ -193,6 +194,7 @@ final class LogExplorer
             'to' => $toMs,
             'total' => $total,
             'matched' => $matched,
+            'telemetry' => $telemetry,
             'truncated' => $truncated,
             'tookMs' => round((microtime(true) - $started) * 1000, 1),
         ];
@@ -261,11 +263,24 @@ final class LogExplorer
      *
      * @return \Generator<int,Row>
      */
-    private function read(array $sources, int $fromMs, int $toMs): \Generator
+    /**
+     * @param array<string,string> $sources
+     *
+     * @param-out int $telemetry how many records turned out to be LogUI's own telemetry
+     *
+     * @return \Generator<int,Row>
+     */
+    private function read(array $sources, int $fromMs, int $toMs, int &$telemetry = 0): \Generator
     {
+        $telemetry = 0;
+
         foreach ($this->merged->readRange($sources, $fromMs, $toMs) as $row) {
             // LogUI's own telemetry lines belong to the Requests tab, not the log explorer.
+            // They are counted on the way past: in production the telemetry file *is* the
+            // application's log, so a user can pick a file, see its size, and get an empty list.
+            // Reporting the number lets the UI say why instead of looking broken.
             if (str_contains($row['message'], TelemetryReader::SENTINEL)) {
+                ++$telemetry;
                 continue;
             }
 

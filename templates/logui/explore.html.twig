@@ -14,7 +14,7 @@
      data-selected="{{ selected|join(',')|e('html_attr') }}"
      data-follow="{{ follow|default(true) ? '1' : '0' }}"
      {# Public refs and labels only — the absolute server path never reaches the browser. #}
-     data-sources="{{ sources|map(s => {ref: s.ref, label: s.label})|json_encode|e('html_attr') }}">
+     data-sources="{{ sources|map(s => {ref: s.ref, label: s.label, size: s.size})|json_encode|e('html_attr') }}">
 
     <section class="ex-hero">
         {# The search everyone needs, first. LogQL is a power tool and lives behind a link. #}
@@ -275,6 +275,9 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 .ex-val .d { width:7px; height:7px; border-radius:2px; flex:0 0 auto; background:var(--tint,var(--mut)); }
 .ex-val .name { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ex-val .n { color:var(--mut); font-size:10.5px; font-variant-numeric:tabular-nums; }
+/* Size on disk: louder than the record count, because it is the number you came looking for. */
+.ex-val .sz { color:var(--txt); font-size:10px; font-variant-numeric:tabular-nums; white-space:nowrap;
+    background:color-mix(in srgb, var(--mut) 18%, transparent); border-radius:4px; padding:1px 5px; }
 .ex-val.on { background:color-mix(in srgb, var(--tint,var(--accent)) 16%, transparent); }
 /* Share of the matches, drawn behind the label — the eye reads the bar before the number. */
 .ex-val .share { position:absolute; left:0; bottom:0; height:2px; background:var(--tint,var(--accent)); opacity:.55; }
@@ -381,6 +384,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     preset: 3600000,         // last range picked from the select — what "reset zoom" goes back to
     facets: { level: {}, channel: {}, file: {} },
     matched: 0,
+    telemetry: 0,   // records skipped because they are LogUI's own — explains an empty list
     levels: splitList(root.dataset.levels),
     channels: splitList(root.dataset.channels),
     files: splitList(root.dataset.selected),
@@ -564,6 +568,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         state.interval = res.body.interval;
         state.facets = res.body.facets;
         state.matched = res.body.matched;
+        state.telemetry = res.body.telemetry;
 
         // While following, the authoritative window is the one the server actually read — it ends
         // at the server's clock, not ours. Adopt it before drawing so the bars land on the axis.
@@ -577,6 +582,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         renderFacets();
         renderKpis(res.body);
         showTruncated(res.body);
+        countRows();   // the telemetry count arrives here, the empty message depends on it
       })
       .catch(function () { showError('Could not load the histogram.'); });
   }
@@ -706,6 +712,11 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 
     if ('file' === field.key) {
       state.sources.forEach(function (s) { if (names.indexOf(s.ref) === -1) names.push(s.ref); });
+      // Biggest first, with its size on the row: the file eating your disk is the one you came
+      // looking for, and the counts here only cover the current window.
+      return state.sources.length
+        ? sizedFiles(names, counts)
+        : names.map(function (name) { return { name: name, count: counts[name] || 0 }; });
     }
     field.picked().forEach(function (v) { if (names.indexOf(v) === -1) names.push(v); });
 
@@ -717,6 +728,26 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       : function (a, b) { return b.count - a.count || a.name.localeCompare(b.name); });
 
     return values;
+  }
+
+  /** @return list of {name, count, size} ordered by size, largest first. */
+  function sizedFiles(names, counts) {
+    var sizes = {};
+    state.sources.forEach(function (s) { sizes[s.ref] = s.size; });
+
+    return names
+      .map(function (name) { return { name: name, count: counts[name] || 0, size: sizes[name] || 0 }; })
+      .sort(function (a, b) { return b.size - a.size || a.name.localeCompare(b.name); });
+  }
+
+  /** 1 024-based, one decimal below 10 — "1.4 GB", "53 MB", "712 kB". */
+  function fmtBytes(bytes) {
+    if (!bytes) return '';
+    var units = ['B', 'kB', 'MB', 'GB', 'TB'];
+    var at = 0;
+    while (bytes >= 1024 && at < units.length - 1) { bytes /= 1024; at++; }
+
+    return (bytes >= 10 || at === 0 ? Math.round(bytes) : Math.round(bytes * 10) / 10) + ' ' + units[at];
   }
 
   function valueNode(field, value, peak, picked) {
@@ -739,6 +770,16 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     var n = tag('span', value.count ? value.count.toLocaleString() : '—');
     n.className = 'n';
 
+    // For files, the size on disk matters more than the count in the current window — it is how
+    // you find the one eating the disk, which the window-scoped count cannot tell you.
+    var size = null;
+    if (undefined !== value.size) {
+      size = tag('span', fmtBytes(value.size));
+      size.className = 'sz';
+      label.title = value.name + ' — ' + (fmtBytes(value.size) || 'empty') + ' on disk, '
+        + value.count.toLocaleString() + ' records in this window';
+    }
+
     var share = document.createElement('span');
     share.className = 'share';
     share.style.width = (value.count / peak * 100).toFixed(1) + '%';
@@ -751,6 +792,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       label.appendChild(dot);
     }
     label.appendChild(name);
+    if (size) label.appendChild(size);
     label.appendChild(n);
     label.appendChild(share);
 
@@ -809,7 +851,23 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     $('ex-empty').hidden = n > 0;
     $('ex-empty').textContent = state.live
       ? 'Listening… new records will appear here.'
-      : 'No matching lines in this window.';
+      : emptyReason();
+  }
+
+  /**
+   * An empty list is a dead end unless it says why.
+   *
+   * The common surprise: in production the telemetry file *is* the application's log, so a file
+   * can be a gigabyte, be offered in the Fields panel with its size, and still show nothing —
+   * every line in it belongs to the Requests tab.
+   */
+  function emptyReason() {
+    if (state.telemetry > 0) {
+      return 'Nothing to show here — all ' + state.telemetry.toLocaleString() +
+        ' records in this window are LogUI\'s own telemetry, which lives in the Requests tab.';
+    }
+
+    return 'No matching lines in this window.';
   }
 
   /**

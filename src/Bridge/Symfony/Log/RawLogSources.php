@@ -28,7 +28,7 @@ final class RawLogSources
     ) {
     }
 
-    /** @return list<array{label:string,path:string,ref:string}> */
+    /** @return list<array{label:string,path:string,ref:string,size:int,size_human:string}> */
     public function all(): array
     {
         $byPath = [];
@@ -63,10 +63,38 @@ final class RawLogSources
         $out = [];
         foreach (array_values($byPath) as $entry) {
             $entry['ref'] = $this->ref($entry['path']);
+            // Shown in the UI: which file is the one worth worrying about. A missing or
+            // unreadable file reports 0 rather than disappearing from the list.
+            $entry['size'] = is_file($entry['path']) ? (int) filesize($entry['path']) : 0;
+            $entry['size_human'] = self::humanSize($entry['size']);
             $out[] = $entry;
         }
 
         return $out;
+    }
+
+    /**
+     * "1.4 GB", "53 MB", "712 kB" — 1 024-based, one decimal only while it still means something.
+     *
+     * Formatted here rather than in Twig so the templates need no extra extension: LogUI renders
+     * inside the host's Twig and must not require anything of it.
+     */
+    public static function humanSize(int $bytes): string
+    {
+        if ($bytes <= 0) {
+            return '—';
+        }
+
+        $units = ['B', 'kB', 'MB', 'GB', 'TB'];
+        $at = 0;
+        $size = (float) $bytes;
+
+        while ($size >= 1024 && $at < \count($units) - 1) {
+            $size /= 1024;
+            ++$at;
+        }
+
+        return ($size >= 10 || 0 === $at ? (string) round($size) : (string) round($size, 1)).' '.$units[$at];
     }
 
     /**
