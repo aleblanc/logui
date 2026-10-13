@@ -114,12 +114,17 @@ All keys are optional with sensible defaults (`config/packages/log_ui.yaml`):
 ```yaml
 log_ui:
     telemetry_file: '%kernel.logs_dir%/%kernel.environment%.log'  # existing log to write/read telemetry
+    telemetry_rotation: none           # none | daily | monthly — see below
+    telemetry_max_files: 0             # with rotation on, how many dated files to keep (0 = all)
     slow_query_ms: 50                  # SQL slower than this is flagged
     query_budget_seconds: 5.0          # wall-clock ceiling for one explorer query (see below)
     max_records_per_profile: 1000      # cap on records captured per request (bounds line size)
     ui_path: /_logui
     access: password                   # password (default) | delegate
     ui_password: '%env(LOGUI_PASSWORD)%'  # required in prod when access=password
+    capture_requests: true             # one telemetry line per HTTP request (the Requests tab)
+    capture_commands: true             # same, for console commands
+    ignore_commands: []                # commands never profiled — wildcards ok ('scheduler:*')
     ignore_paths: ['/_wdt', '/_profiler']  # never profiled (the UI path is always added)
     capture_monolog: true              # auto-wire the handler onto every Monolog channel
     discover_monolog: true             # auto-list files from Monolog handlers (Files tab)
@@ -128,6 +133,59 @@ log_ui:
     redact_keys: [password, passwd, secret, token, authorization, api_key]
     health_services: []                # systemd units shown on the Health tab (e.g. [nginx, mariadb, php8.4-fpm])
 ```
+
+### Why is my log file full of `LOGUI@{…}` lines?
+
+Because that is where LogUI keeps its data. It writes **one `LOGUI@{json}` line per HTTP request
+and per console command** — duration, RAM start→peak, SQL count and slow queries, level counts, and
+the request's own log records. The **Requests** tab reads those lines back. That is the whole
+"no separate store, no database" design.
+
+They are **deliberately hidden from the log explorer** — they belong to the Requests tab. So a file
+that contains nothing else looks empty in the explorer; it tells you so rather than showing a blank
+list.
+
+On a back-office that is one line per action, and it is the point. On a **public site** it is one
+line per page view, and on a **per-minute cron** it is a line a minute whether or not the command
+did anything — which is how a log file reaches a gigabyte. Three ways to cut it, from surgical to
+blunt:
+
+```yaml
+log_ui:
+    ignore_commands: ['scheduler:*']   # the usual culprit: a cron tick that does nothing
+    ignore_paths: ['/health', '/ping'] # noisy endpoints (the UI path is always excluded)
+
+    capture_requests: false            # no HTTP profiling at all
+    capture_commands: false            # no console profiling at all
+```
+
+Turning capture off leaves **the log explorer and the Files tab working exactly as before** — they
+read your ordinary log files and never needed the telemetry. You lose the Requests tab, nothing
+else.
+
+#### Give the telemetry its own file, with a retention
+
+If you want to *keep* the Requests tab but stop the telemetry inflating your application log, move
+it to its own file and let LogUI rotate it:
+
+```yaml
+log_ui:
+    telemetry_file: '%kernel.logs_dir%/logui.log'
+    telemetry_rotation: daily      # logui.log → logui-2026-10-13.log
+    telemetry_max_files: 30        # a month of history; older files are deleted
+```
+
+Pruning happens the first time a new day is seen, so there is no cron to set up. The Requests tab
+reads across the dated files as one history, newest first, under a single memory budget — thirty
+days of files does not mean thirty times the memory.
+
+**Only files LogUI itself named are ever deleted.** The name must match the pattern *and* its date
+part must parse back to the exact format LogUI writes, so `logui-backup.log`,
+`logui-2026-13-99.log`, a `.gz` left by logrotate, and the undated base file are all untouchable.
+
+Rotation is `none` by default, and you should **leave it that way while `telemetry_file` is your
+application's own log** (`prod.log`, `dev.log`): rotating that file is logrotate's job, not a
+library's.
 
 ### "Partial result" in the explorer
 

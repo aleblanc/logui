@@ -22,6 +22,8 @@ final class RequestProfilerListener implements EventSubscriberInterface
     /**
      * @param list<string> $ignorePaths request path prefixes that must NOT be profiled
      *                                  (the LogUI UI itself + dev tools like /_wdt, /_profiler)
+     * @param bool         $enabled     false disables request profiling entirely — see
+     *                                  {@see onKernelRequest()}
      */
     public function __construct(
         private readonly CurrentProfile $current,
@@ -29,6 +31,7 @@ final class RequestProfilerListener implements EventSubscriberInterface
         private readonly TelemetryLogger $telemetry,
         private readonly array $ignorePaths,
         ?IdGenerator $ids = null,
+        private readonly bool $enabled = true,
     ) {
         $this->ids = $ids ?? new RandomIdGenerator();
     }
@@ -43,9 +46,15 @@ final class RequestProfilerListener implements EventSubscriberInterface
         ];
     }
 
+    /**
+     * One profile per HTTP request means one telemetry line per page view. That is the point on a
+     * back-office; on a public site with real traffic it is a line per visitor per page, and the
+     * log file grows accordingly. `capture_requests: false` turns it off and leaves the log
+     * explorer — which reads your ordinary log files — working exactly as before.
+     */
     public function onKernelRequest(RequestEvent $event): void
     {
-        if (!$event->isMainRequest()) {
+        if (!$this->enabled || !$event->isMainRequest()) {
             return;
         }
         $path = $event->getRequest()->getPathInfo();

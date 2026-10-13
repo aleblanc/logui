@@ -19,6 +19,35 @@ final class TelemetryReader
     public const SENTINEL = 'LOGUI@';
     public const DEFAULT_TAIL_BYTES = 5_000_000;
 
+    /**
+     * Reads several files as one history, newest file first, sharing a single byte budget.
+     *
+     * The budget is shared rather than per-file on purpose: with 30 days of rotation, a per-file
+     * tail would load 30 × 5 MB into memory to show a page of 100 rows. Spending it newest-first
+     * means the recent history is complete and the tail of the record is what gets dropped —
+     * which is the half nobody is looking at.
+     *
+     * @param list<string> $paths newest first (see {@see TelemetryFiles::all()})
+     *
+     * @return list<Profile> oldest first
+     */
+    public function readAll(array $paths, int $maxBytes = self::DEFAULT_TAIL_BYTES): array
+    {
+        $profiles = [];
+        $budget = $maxBytes;
+
+        foreach ($paths as $path) {
+            if ($budget <= 0) {
+                break;
+            }
+
+            $profiles = [...$this->read($path, $budget), ...$profiles];
+            $budget -= is_file($path) ? (int) filesize($path) : 0;
+        }
+
+        return $profiles;
+    }
+
     /** @return list<Profile> in file order (oldest first) */
     public function read(string $path, int $maxBytes = self::DEFAULT_TAIL_BYTES): array
     {

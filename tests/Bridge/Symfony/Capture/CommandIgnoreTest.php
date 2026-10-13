@@ -27,7 +27,7 @@ use Symfony\Component\Console\Output\NullOutput;
 final class CommandIgnoreTest extends TestCase
 {
     /** @param list<string> $ignore */
-    private function begins(string $command, array $ignore): bool
+    private function begins(string $command, array $ignore, bool $enabled = true): bool
     {
         $current = new CurrentProfile();
         $listener = new CommandProfilerListener(
@@ -38,6 +38,7 @@ final class CommandIgnoreTest extends TestCase
             new TelemetryLogger('/dev/null'),
             null,
             $ignore,
+            $enabled,
         );
 
         $listener->onConsoleCommand(new ConsoleCommandEvent(
@@ -85,5 +86,11 @@ final class CommandIgnoreTest extends TestCase
     {
         self::assertFalse($this->begins('messenger:consume', ['scheduler:*', 'messenger:consume']));
         self::assertTrue($this->begins('app:import', ['scheduler:*', 'messenger:consume']));
+    }
+
+    /** capture_commands: false — no profiling at all, whatever the ignore list says. */
+    public function test_capture_can_be_switched_off_entirely(): void
+    {
+        self::assertFalse($this->begins('app:import', [], enabled: false));
     }
 }

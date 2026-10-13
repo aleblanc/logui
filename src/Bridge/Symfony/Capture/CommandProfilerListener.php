@@ -28,6 +28,7 @@ final class CommandProfilerListener implements EventSubscriberInterface
         private readonly TelemetryLogger $telemetry,
         ?IdGenerator $ids = null,
         private readonly array $ignore = [],
+        private readonly bool $enabled = true,
     ) {
         $this->ids = $ids ?? new RandomIdGenerator();
     }
@@ -46,7 +47,7 @@ final class CommandProfilerListener implements EventSubscriberInterface
     {
         $name = $event->getCommand()?->getName() ?? '(closure)';
 
-        if ($this->ignored($name)) {
+        if (!$this->enabled || $this->ignored($name)) {
             return;
         }
 

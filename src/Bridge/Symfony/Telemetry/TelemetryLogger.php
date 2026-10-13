@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aleblanc\LogUi\Bridge\Symfony\Telemetry;
 
 use Aleblanc\LogUi\Core\Model\Profile;
+use Aleblanc\LogUi\Core\Storage\TelemetryFiles;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 
 /**
@@ -18,8 +19,12 @@ use Aleblanc\LogUi\Core\Storage\TelemetryReader;
  */
 final class TelemetryLogger
 {
-    public function __construct(private readonly string $telemetryFile)
-    {
+    private ?string $lastFile = null;
+
+    public function __construct(
+        private readonly string $telemetryFile,
+        private readonly ?TelemetryFiles $files = null,
+    ) {
     }
 
     public function log(Profile $profile): void
@@ -31,12 +36,14 @@ final class TelemetryLogger
             return;
         }
 
-        $dir = \dirname($this->telemetryFile);
+        $file = $this->currentFile();
+
+        $dir = \dirname($file);
         if (!is_dir($dir) && !mkdir($dir, 0o777, true) && !is_dir($dir)) {
             return;
         }
 
-        $handle = fopen($this->telemetryFile, 'a');
+        $handle = fopen($file, 'a');
         if (false === $handle) {
             return;
         }
@@ -50,5 +57,27 @@ final class TelemetryLogger
         } finally {
             fclose($handle);
         }
+    }
+
+    /**
+     * The file to append to, pruning old ones the first time a new day (or month) is seen.
+     *
+     * Pruning here rather than on a schedule keeps the bundle free of cron: the only moment the
+     * set of files can grow is the moment one is created, so that is when it is trimmed. The
+     * `$lastFile` guard means the directory is scanned once per rotation, not once per request.
+     */
+    private function currentFile(): string
+    {
+        if (null === $this->files) {
+            return $this->telemetryFile;
+        }
+
+        $file = $this->files->current();
+        if ($file !== $this->lastFile) {
+            $this->lastFile = $file;
+            $this->files->prune();
+        }
+
+        return $file;
     }
 }

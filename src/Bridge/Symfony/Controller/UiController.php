@@ -9,6 +9,7 @@ use Aleblanc\LogUi\Core\Model\ProfileType;
 use Aleblanc\LogUi\Core\Query\ProfileFilter;
 use Aleblanc\LogUi\Core\Query\ProfileSorter;
 use Aleblanc\LogUi\Core\Query\ProfileSummary;
+use Aleblanc\LogUi\Core\Storage\TelemetryFiles;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -18,7 +19,7 @@ final class UiController
 {
     public function __construct(
         private readonly TelemetryReader $reader,
-        private readonly string $telemetryFile,
+        private readonly TelemetryFiles $files,
         private readonly Environment $twig,
         private readonly UiAccessGuard $guard,
         private readonly string $uiPath,
@@ -42,7 +43,7 @@ final class UiController
             method: '' !== $method ? $method : null,
         );
 
-        $all = $this->reader->read($this->telemetryFile);
+        $all = $this->reader->readAll($this->files->all());
 
         // Stats header is the GENERAL count over everything — not recomputed after filtering.
         $summary = ProfileSummary::of($all);
@@ -72,7 +73,7 @@ final class UiController
             return $this->error('Forbidden', 403);
         }
 
-        foreach ($this->reader->read($this->telemetryFile) as $profile) {
+        foreach ($this->reader->readAll($this->files->all()) as $profile) {
             if ($profile->id === $id) {
                 return $this->render('detail', $profile->label, ['profile' => $profile]);
             }

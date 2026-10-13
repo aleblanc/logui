@@ -42,6 +42,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logged since, rather than freezing on the moment the page was opened. Zooming or panning pins
   both ends; picking a range or resetting the zoom returns to following.
 - The explorer's query, time window and filters are mirrored into the URL, so a view is shareable.
+- **Telemetry rotation**: `telemetry_rotation: daily|monthly` + `telemetry_max_files` give the
+  telemetry file its own dated history (`logui-2026-10-13.log`) with a retention, so it can be
+  separated from the application log and capped without cron or logrotate. Pruning runs the first
+  time a new day is seen; only files LogUI itself named — date part round-tripped through the exact
+  format — can ever be deleted. The Requests tab reads across the dated files as one history under
+  a single memory budget.
+- Log files show their **size on disk** — in the Fields panel (largest first) and as a sorted,
+  colour-flagged column in the Files tab with a total.
+- An empty result caused by telemetry now **says so** instead of looking broken: in production the
+  telemetry file is the application's log, so a user could pick a gigabyte-sized file and get a
+  blank list.
 - **LogUI's own HTTP traffic is hidden** from the explorer by default. Watching a live tail means
   polling, and the polling is itself logged — measured at **42 % of the records** on a quiet
   application. LogUI cannot stop those lines being written (nginx's access log and the host's
@@ -57,6 +68,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   many files legitimately needs more.
 
 ### Changed
+- **The profiler can now be switched off.** `capture_requests` and `capture_commands` (both
+  default true) gate the telemetry lines; `ignore_commands` excludes individual commands with
+  shell wildcards. Previously only `ignore_paths` existed, so a public site wrote one line per page
+  view and a per-minute cron wrote one a minute, with no way out. Turning capture off leaves the
+  log explorer and the Files tab untouched — they read ordinary log files.
 - **The log explorer is now the landing page.** `{ui}` renders the explorer; the captured-request
   list moved to `{ui}/requests`. `{ui}/explore` still works, so existing links and bookmarks do not
   break. **Upgrading:** any link you built by hand to the request list needs `/requests` appended.

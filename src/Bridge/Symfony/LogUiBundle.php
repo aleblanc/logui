@@ -27,6 +27,7 @@ use Aleblanc\LogUi\Core\Stats\MemoryProbe;
 use Aleblanc\LogUi\Core\Stats\SystemClock;
 use Aleblanc\LogUi\Core\Storage\MergedLogReader;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
+use Aleblanc\LogUi\Core\Storage\TelemetryFiles;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -81,6 +82,16 @@ final class LogUiBundle extends AbstractBundle
                     ->defaultValue('%kernel.logs_dir%/%kernel.environment%.log')
                     ->info('The existing log file LogUI writes telemetry lines into and reads the request list back from.')
                 ->end()
+                ->enumNode('telemetry_rotation')
+                    ->values([TelemetryFiles::NONE, TelemetryFiles::DAILY, TelemetryFiles::MONTHLY])
+                    ->defaultValue(TelemetryFiles::NONE)
+                    ->info("Split the telemetry file by date: 'daily' turns logui.log into logui-2026-10-13.log. Keep it 'none' when telemetry_file is your application's own log — rotating that is logrotate's job, not LogUI's.")
+                ->end()
+                ->integerNode('telemetry_max_files')
+                    ->defaultValue(0)
+                    ->min(0)
+                    ->info('With rotation on, how many dated files to keep (30 = a month of history). 0 keeps every one. Only files LogUI itself named are ever deleted.')
+                ->end()
                 ->integerNode('max_records_per_profile')->defaultValue(1000)->end()
                 ->floatNode('slow_query_ms')->defaultValue(50.0)->end()
                 ->floatNode('query_budget_seconds')
@@ -104,6 +115,14 @@ final class LogUiBundle extends AbstractBundle
                     ->scalarPrototype()->end()
                     ->defaultValue(['/_wdt', '/_profiler'])
                     ->info('Request path prefixes never profiled (the LogUI UI path is always added).')
+                ->end()
+                ->booleanNode('capture_requests')
+                    ->defaultTrue()
+                    ->info('Write one telemetry line per HTTP request — the data behind the Requests tab. On a public site that is one line per page view, so turn it off if you only want the log explorer.')
+                ->end()
+                ->booleanNode('capture_commands')
+                    ->defaultTrue()
+                    ->info('Same, for console commands. See also ignore_commands to exclude only the noisy ones.')
                 ->end()
                 ->arrayNode('ignore_commands')
                     ->scalarPrototype()->end()
@@ -152,13 +171,23 @@ final class LogUiBundle extends AbstractBundle
             $config['slow_query_ms'],
         ]);
         // Telemetry is appended directly to its own file (bypasses host Monolog routing) and read back from it.
-        $services->set('logui.telemetry', TelemetryLogger::class)->args([$config['telemetry_file']]);
+        $services->set('logui.telemetry_files', TelemetryFiles::class)
+            ->args([$config['telemetry_file'], $config['telemetry_rotation'], $config['telemetry_max_files']]);
+        $services->set('logui.telemetry', TelemetryLogger::class)
+            ->args([$config['telemetry_file'], new Reference('logui.telemetry_files')]);
         $services->set('logui.telemetry_reader', TelemetryReader::class);
 
         $services->set('logui.current', CurrentProfile::class);
 
         $services->set('logui.listener.request', RequestProfilerListener::class)
-            ->args([new Reference('logui.current'), new Reference('logui.factory'), new Reference('logui.telemetry'), array_merge([$config['ui_path']], $config['ignore_paths'])])
+            ->args([
+                new Reference('logui.current'),
+                new Reference('logui.factory'),
+                new Reference('logui.telemetry'),
+                array_merge([$config['ui_path']], $config['ignore_paths']),
+                null,   // IdGenerator — the default random one
+                $config['capture_requests'],
+            ])
             ->tag('kernel.event_subscriber');
         $services->set('logui.listener.command', CommandProfilerListener::class)
             ->args([
@@ -167,6 +196,7 @@ final class LogUiBundle extends AbstractBundle
                 new Reference('logui.telemetry'),
                 null,   // IdGenerator — the default random one
                 $config['ignore_commands'],
+                $config['capture_commands'],
             ])
             ->tag('kernel.event_subscriber');
 
@@ -186,7 +216,7 @@ final class LogUiBundle extends AbstractBundle
             ->tag('kernel.event_subscriber');
 
         $services->set(UiController::class)
-            ->args([new Reference('logui.telemetry_reader'), $config['telemetry_file'], new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
+            ->args([new Reference('logui.telemetry_reader'), new Reference('logui.telemetry_files'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
             ->public()
             ->tag('controller.service_arguments');
 

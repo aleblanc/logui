@@ -10,6 +10,7 @@ use Aleblanc\LogUi\Core\Model\LogRecord;
 use Aleblanc\LogUi\Core\Model\Profile;
 use Aleblanc\LogUi\Core\Model\ProfileType;
 use Aleblanc\LogUi\Core\Model\QueryStats;
+use Aleblanc\LogUi\Core\Storage\TelemetryFiles;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
@@ -48,7 +49,7 @@ final class UiControllerTest extends TestCase
     {
         return new UiController(
             new TelemetryReader(),
-            $this->file,
+            new TelemetryFiles($this->file),
             self::twig(),
             new UiAccessGuard($env, $password),
             '/_logui',
