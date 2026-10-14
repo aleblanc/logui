@@ -17,7 +17,7 @@ namespace Aleblanc\LogUi\Core\Query\LogQL;
 final class Evaluator
 {
     /** Row fields usable as stream-selector labels. */
-    private const LABELS = ['file', 'level', 'channel'];
+    private const LABELS = ['file', 'level', 'channel', 'type'];
 
     public function __construct(private readonly Query $query)
     {
@@ -140,6 +140,7 @@ final class Evaluator
             'file' => $row['file'],
             'level' => $row['level'],
             'channel' => $row['channel'],
+            'type' => $row['type'],
         ];
 
         foreach (['context', 'extra'] as $part) {

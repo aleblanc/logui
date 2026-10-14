@@ -128,6 +128,53 @@ final class LogExplorerTest extends TestCase
         self::assertStringContainsString('timeout', $result['rows'][0]['message']);
     }
 
+    public function test_context_returns_the_lines_around_a_record(): void
+    {
+        [$path, $offsets] = $this->numberedFile();
+
+        $context = $this->explorer()->context('app.log', $path, $offsets[10], 3);
+
+        self::assertCount(7, $context['rows'], '3 before + pivot + 3 after');
+        self::assertSame(3, $context['pivot']);
+        self::assertSame('line 10', $context['rows'][$context['pivot']]['message']);
+    }
+
+    public function test_context_at_the_file_start_has_no_lines_before(): void
+    {
+        [$path, $offsets] = $this->numberedFile();
+
+        $context = $this->explorer()->context('app.log', $path, $offsets[0], 3);
+
+        self::assertSame(0, $context['pivot']);
+        self::assertSame('line 0', $context['rows'][0]['message']);
+    }
+
+    /**
+     * A 20-line Monolog file and the byte offset of each line.
+     *
+     * @return array{string,list<int>}
+     */
+    private function numberedFile(): array
+    {
+        $path = tempnam(sys_get_temp_dir(), 'logui_ctx_').'.log';
+        $this->files[] = $path;
+
+        $lines = [];
+        for ($i = 0; $i < 20; ++$i) {
+            $lines[] = sprintf('[2026-10-13T12:00:00+00:00] app.INFO: line %d', $i);
+        }
+        file_put_contents($path, implode("\n", $lines)."\n");
+
+        $offsets = [];
+        $pos = 0;
+        foreach ($lines as $line) {
+            $offsets[] = $pos;
+            $pos += \strlen($line) + 1;
+        }
+
+        return [$path, $offsets];
+    }
+
     public function test_the_time_window_is_honoured(): void
     {
         $result = $this->explorer()->query($this->sources(), '', $this->at(20), $this->at(70));
@@ -184,12 +231,7 @@ final class LogExplorerTest extends TestCase
         self::assertSame(1_800_000, $explorer->bucketWidth(0, 86_400_000));    // 24 h   → 30 min
     }
 
-    /**
-     * In production the telemetry file *is* the application's log, so a user can pick a
-     * gigabyte-sized file in the Fields panel and get an empty list. The count is what lets the
-     * UI say why instead of looking broken.
-     */
-    public function test_skipped_telemetry_is_counted_so_an_empty_list_can_explain_itself(): void
+    public function test_telemetry_lines_are_listed_as_profile_rows(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'logui_telemetry_').'.log';
         $this->files[] = $path;
@@ -202,22 +244,23 @@ final class LogExplorerTest extends TestCase
                 'type' => 'cli',
                 'at' => gmdate('Y-m-d\TH:i:sP', $base + $i),
                 'label' => 'scheduler:run',
+                'status' => 0,
+                'duration_ms' => 5.0,
+                'mem_peak_mb' => 1.0,
+                'queries' => ['count' => 0, 'slow' => []],
+                'levels' => [],
+                'exception' => null,
+                'truncated' => false,
+                'records' => [],
             ]);
         }
         file_put_contents($path, implode("\n", $lines)."\n");
 
         $histogram = $this->explorer()->histogram(['prod.log' => $path], '', $this->at(0), $this->at(60));
 
-        self::assertSame(0, $histogram['matched'], 'telemetry is never shown in the explorer');
-        self::assertSame(3, $histogram['telemetry'], 'but it is counted, so the UI can explain the emptiness');
-    }
-
-    public function test_a_file_with_real_records_reports_no_telemetry(): void
-    {
-        $histogram = $this->explorer()->histogram($this->sources(), '', $this->at(0), $this->at(120));
-
-        self::assertSame(0, $histogram['telemetry']);
-        self::assertSame(5, $histogram['matched']);
+        self::assertSame(3, $histogram['matched']);
+        self::assertSame(['command' => 3], $histogram['facets']['type']);
+        self::assertSame(['info' => 3], $histogram['facets']['level']);
     }
 
     public function test_tail_from_reads_only_what_was_appended(): void

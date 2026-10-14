@@ -33,22 +33,25 @@ final class Profile
     /** @return array<string,mixed> */
     public function toArray(): array
     {
+        // `records` is written LAST on purpose: it is the bulk of the line, and the explorer only
+        // needs the header to list a request. TelemetryHeader cuts the payload at `"records":`
+        // and decodes the prefix — cheap — so every key the list needs must come before it.
         return [
             'id' => $this->id,
             'type' => $this->type->value,
             'at' => $this->at->format(\DateTimeInterface::ATOM),
             'label' => $this->label,
+            'method' => $this->method,
             'status' => $this->status,
             'duration_ms' => $this->durationMs,
+            'mem_start_mb' => $this->memStartMb,
+            'mem_end_mb' => $this->memEndMb,
             'mem_peak_mb' => $this->memPeakMb,
             'queries' => $this->queries->toArray(),
             'levels' => $this->levels,
-            'records' => array_map(static fn (LogRecord $r): array => $r->toArray(), $this->records),
             'exception' => $this->exception,
             'truncated' => $this->truncated,
-            'method' => $this->method,
-            'mem_start_mb' => $this->memStartMb,
-            'mem_end_mb' => $this->memEndMb,
+            'records' => array_map(static fn (LogRecord $r): array => $r->toArray(), $this->records),
         ];
     }
 

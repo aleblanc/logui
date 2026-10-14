@@ -15,8 +15,9 @@ use Aleblanc\LogUi\Core\Storage\PlainLogReader;
  * application logged `Timeout` or `timeout`. The regular-expression mode is opt-in, so an
  * accidental `.` or `(` in a search term is a literal character rather than a syntax error.
  *
- * Both the message and its context are searched: a request id or a SQL parameter lives in the
- * context, and having to know which half of the record holds what defeats the point of a grep.
+ * The message, its context and its extra are all searched: a request id or a SQL parameter lives
+ * in one of the latter two, and having to know which part of the record holds what defeats the
+ * point of a grep.
  *
  * @phpstan-import-type Row from PlainLogReader
  */
@@ -47,13 +48,22 @@ final class Grep
     /** @param Row $row */
     public function matches(array $row): bool
     {
-        if (null !== $this->regex) {
-            // A null verdict means the engine gave up; a record is never selected on an error.
-            return true === $this->regex->test($row['message'])
-                || (null !== $row['context'] && true === $this->regex->test($row['context']));
+        foreach ([$row['message'], $row['context'], $row['extra']] as $haystack) {
+            if (null === $haystack || '' === $haystack) {
+                continue;
+            }
+
+            // A null verdict from the regex engine means it gave up; a record is never selected on
+            // an error, so only an explicit `true` counts as a hit.
+            $hit = null !== $this->regex
+                ? true === $this->regex->test($haystack)
+                : false !== stripos($haystack, $this->needle);
+
+            if ($hit) {
+                return true;
+            }
         }
 
-        return false !== stripos($row['message'], $this->needle)
-            || (null !== $row['context'] && false !== stripos($row['context'], $this->needle));
+        return false;
     }
 }

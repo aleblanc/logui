@@ -44,12 +44,14 @@ final class ExploreController
     /** Delay between two polls of the files being tailed. */
     private const STREAM_POLL_US = 700_000;
 
+    /** @param array<string,string> $views named explorer views: name => query string */
     public function __construct(
         private readonly RawLogSources $sources,
         private readonly LogExplorer $explorer,
         private readonly Environment $twig,
         private readonly UiAccessGuard $guard,
         private readonly string $uiPath,
+        private readonly array $views = [],
     ) {
     }
 
@@ -72,12 +74,15 @@ final class ExploreController
             'selected' => $this->selectedRefs($request),
             'levels' => $this->strings($request, 'levels'),
             'channels' => $this->strings($request, 'channels'),
+            'types' => $this->strings($request, 'types'),
+            'pattern' => $request->query->getString('pattern'),
             'grep' => $request->query->getString('grep'),
             'grep_regex' => $request->query->getBoolean('grep_regex'),
             // No explicit end means "up to now", and the page keeps it that way: every reload
             // ends the window at the server's clock rather than at whenever the page was opened.
             'follow' => !$request->query->has('to'),
             'include_self' => $request->query->getBoolean('include_self'),
+            'views' => $this->views,
         ]));
     }
 
@@ -130,12 +135,57 @@ final class ExploreController
                 $from,
                 $to,
                 $this->selection($request),
+                max(1, min(500, $request->query->getInt('top', 20))),
             );
         } catch (SyntaxError $e) {
             return $this->syntaxError($e);
         }
 
         return new JsonResponse($result);
+    }
+
+    /** GET {ui}/explore/profile — the full capture (records included) behind one profile row. */
+    public function profile(Request $request): JsonResponse
+    {
+        if (!$this->guard->authorize($request)) {
+            return new JsonResponse(['error' => 'Forbidden'], 403);
+        }
+
+        $ref = $request->query->getString('file');
+        $path = $this->resolveSources($request)[$ref] ?? null;
+        $id = $request->query->getString('id');
+
+        if (null === $path || '' === $id || !preg_match('/^[A-Za-z0-9]+$/', $id)) {
+            return new JsonResponse(['error' => 'Profile not found'], 404);
+        }
+
+        $profile = $this->explorer->profile($ref, $path, $request->query->getInt('ts'), $id);
+
+        return null === $profile
+            ? new JsonResponse(['error' => 'Profile not found'], 404)
+            : new JsonResponse($profile);
+    }
+
+    /** GET {ui}/explore/context — the lines around one record, located by its byte offset. */
+    public function context(Request $request): JsonResponse
+    {
+        if (!$this->guard->authorize($request)) {
+            return new JsonResponse(['error' => 'Forbidden'], 403);
+        }
+
+        $ref = $request->query->getString('file');
+        $path = $this->resolveSources($request)[$ref] ?? null;
+        if (null === $path) {
+            return new JsonResponse(['error' => 'Not found'], 404);
+        }
+
+        $n = max(1, min(50, $request->query->getInt('n', 5)));
+        $result = $this->explorer->context($ref, $path, max(0, $request->query->getInt('offset')), $n);
+
+        return new JsonResponse([
+            'rows' => array_map($this->publicRow(...), $result['rows']),
+            'pivot' => $result['pivot'],
+        ]);
     }
 
     /**
@@ -253,6 +303,8 @@ final class ExploreController
      */
     private function publicRow(array $row): array
     {
+        $profile = $row['profile'];
+
         return [
             'ts' => $row['ts'],
             'tsInferred' => $row['ts_inferred'],
@@ -261,7 +313,16 @@ final class ExploreController
             'channel' => $row['channel'],
             'level' => $row['level'],
             'message' => $row['message'],
-            'context' => $row['context'],
+            // A profile row's context is the whole capture — kilobytes per request. The list
+            // only needs the header; the capture is fetched when the row is expanded.
+            'context' => null === $profile ? $row['context'] : null,
+            // `extra` carries the `logui_id` that pivots a log line to its request; a profile row
+            // has no extra of its own.
+            'extra' => null === $profile ? $row['extra'] : null,
+            'type' => $row['type'],
+            'profile' => $profile,
+            // Byte offset of the record in its file — the anchor for fetching context lines.
+            'offset' => $row['offset'],
         ];
     }
 
@@ -308,6 +369,8 @@ final class ExploreController
             // application that noise is most of what you see. Opt back in with `include_self=1`
             // — nothing is dropped silently, the UI shows the toggle and its state.
             $request->query->getBoolean('include_self') ? [] : $this->ownPaths(),
+            $this->strings($request, 'types'),
+            '' === ($pattern = $request->query->getString('pattern')) ? null : $pattern,
         );
     }
 
@@ -355,7 +418,12 @@ final class ExploreController
     private function window(Request $request): array
     {
         $to = $request->query->getInt('to') ?: (int) (microtime(true) * 1000);
-        $from = $request->query->getInt('from') ?: $to - self::DEFAULT_SPAN_MS;
+        $span = $request->query->getInt('span');
+        $from = $request->query->getInt('from');
+        if (0 === $from) {
+            // A relative `span` lets a saved view say "the last 24 h" without pinning a timestamp.
+            $from = $span > 0 ? $to - $span : $to - self::DEFAULT_SPAN_MS;
+        }
 
         return $from <= $to ? [$from, $to] : [$to, $from];
     }

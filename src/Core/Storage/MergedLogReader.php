@@ -77,6 +77,19 @@ final class MergedLogReader
     }
 
     /**
+     * Records of one source whose first line begins at a byte offset in `[from, to)`.
+     *
+     * Context lines are a single-file concern (the offset only means anything within its own file),
+     * so this is a thin passthrough to {@see PlainLogReader::readBetween()}.
+     *
+     * @return \Generator<int,Row>
+     */
+    public function readBetween(string $path, int $from, int $to): \Generator
+    {
+        yield from $this->reader->readBetween($path, $from, $to);
+    }
+
+    /**
      * @param array<string,\Generator<int,Row>> $streams
      *
      * @return \Generator<int,Row>

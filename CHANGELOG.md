@@ -7,6 +7,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
 ### Added
+- `GET {ui}/explore/profile?file=&ts=&id=` returns the full capture behind one request row.
+- `types[]` parameter on the explorer endpoints and page.
+- **Record correlation**: `Bridge\Symfony\Monolog\ProfileIdProcessor` stamps every Monolog record
+  with `extra.logui_id` (the id of the request/command that wrote it), gated by the new
+  `correlate_records` option (default true). `Core\Query\Grep` now also matches a record's `extra`,
+  so an id finds its lines. The explorer pivots between a log line, its request, and the moment
+  around it; the request detail page links to its own records in the explorer.
+- **Request timeline**: slow queries carry an offset `t` (ms from the start of the request), and an
+  expanded request draws its records and queries on one SVG strip.
+- **Latency**: the histogram reports p50/p95 request latency per bucket (`latency` on each bucket)
+  and draws the p95 as a line over the bars, on its own scale.
+- **Log patterns**: `Core\Query\Patterns` groups messages by shape; the histogram payload carries
+  the top `patterns` (`top` param, default 20, max 500) and `Selection(pattern:)` / the `pattern`
+  param narrow to one shape.
+- **Context lines**: every `Row` carries a byte `offset`; `PlainLogReader::readBetween()`,
+  `LogExplorer::context()` and `GET {ui}/explore/context?file=&offset=&n=` return the records
+  around one line.
+- **Compare with the previous period**: a second chart below the histogram shows the same window one
+  period earlier on the same scale, and the main chart's tooltip carries the **% variation** per
+  bucket. **Readable stack traces with editor links** — both client-side in the explorer.
+- **`logui:check`** console command (exit non-zero when a query matches at least `--min` records in
+  `--since`), named **`views`** config, a relative **`span`** window param, and keyboard navigation.
+- **Shrink a log file** from the Files tab: `Core\Storage\LogTruncator` keeps the last N MB
+  (10/50/100/250/500 or empties it), dropping the partial first line so the file stays parseable.
+  Destructive, so it is a guarded `POST {ui}/logs/truncate`, gated by the new `allow_truncate`
+  option (default true).
+- A footer on every page linking to the project on GitHub.
 - **Log explorer** (`Explore` tab) with a LogQL-lite query language, a zoomable time histogram
   and a live tail, across one or all log files.
 - `Core\Time\TimestampParser`: every parsed line now carries an epoch timestamp (`ts`), derived
@@ -68,6 +95,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   many files legitimately needs more.
 
 ### Changed
+- **Requests and commands are explorer rows.** Every `LOGUI@` line is listed in the explorer
+  with `type` = `request` or `command`: one dense line (method, label, status, ms, MB, SQL),
+  expandable to the full capture (slow queries, exception, records), with the time window, the
+  histogram, the facets, the live tail and the URL that come with the explorer. The search box
+  and LogQL see the whole capture (`{type="request"} | json | status >= 500`). A new `type`
+  facet and two KPI cards (Requests with p95, Failed) appear when profiles are in the window.
+  The separate **Requests** nav tab is gone — it is just the explorer with the `type` facet, so it
+  lives there now; `{ui}/requests` still redirects to the preset for old links.
+  `Core\Query\ProfileFilter`, `ProfileSorter` and `ProfileSummary` are removed.
+- `Profile::toArray()` writes `records` last so the explorer can decode only the header of a
+  telemetry line (`Core\Storage\TelemetryHeader`). Lines written by older versions still work.
+- The `telemetry` counter of the histogram payload and the "all records are telemetry" empty
+  state are gone: there is nothing hidden any more.
 - **The profiler can now be switched off.** `capture_requests` and `capture_commands` (both
   default true) gate the telemetry lines; `ignore_commands` excludes individual commands with
   shell wildcards. Previously only `ignore_paths` existed, so a public site wrote one line per page

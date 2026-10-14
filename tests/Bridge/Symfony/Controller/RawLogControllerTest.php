@@ -33,7 +33,7 @@ final class RawLogControllerTest extends TestCase
         @unlink($this->file);
     }
 
-    private function controller(string $env = 'dev'): RawLogController
+    private function controller(string $env = 'dev', bool $allowTruncate = true): RawLogController
     {
         $sources = new RawLogSources(new HandlerPathDiscovery(), [], [$this->file]);
 
@@ -43,6 +43,7 @@ final class RawLogControllerTest extends TestCase
             self::twig(),
             new UiAccessGuard($env, null),
             '/_logui',
+            $allowTruncate,
         );
     }
 
@@ -145,5 +146,49 @@ final class RawLogControllerTest extends TestCase
     public function test_denied_when_guard_refuses(): void
     {
         self::assertSame(403, $this->controller('prod')->list(Request::create('/_logui/logs'))->getStatusCode());
+    }
+
+    public function test_truncate_empties_or_shrinks_the_file(): void
+    {
+        $ref = basename($this->file);
+        $response = $this->controller()->truncate(Request::create('/_logui/logs/truncate', 'POST', ['ref' => $ref, 'keep' => '0']));
+
+        self::assertSame(302, $response->getStatusCode());
+        self::assertSame('', (string) file_get_contents($this->file), 'keep=0 empties the file');
+    }
+
+    public function test_truncate_is_rejected_when_disabled(): void
+    {
+        $ref = basename($this->file);
+        $before = (string) file_get_contents($this->file);
+
+        $response = $this->controller(allowTruncate: false)->truncate(Request::create('/_logui/logs/truncate', 'POST', ['ref' => $ref, 'keep' => '0']));
+
+        self::assertSame(403, $response->getStatusCode());
+        self::assertSame($before, (string) file_get_contents($this->file), 'the file is untouched when truncation is disabled');
+    }
+
+    public function test_truncate_rejects_a_get(): void
+    {
+        $ref = basename($this->file);
+
+        self::assertSame(405, $this->controller()->truncate(Request::create('/_logui/logs/truncate', 'GET', ['ref' => $ref, 'keep' => '0']))->getStatusCode());
+    }
+
+    public function test_truncate_rejects_an_unknown_ref(): void
+    {
+        self::assertSame(403, $this->controller()->truncate(Request::create('/_logui/logs/truncate', 'POST', ['ref' => '../../etc/passwd', 'keep' => '0']))->getStatusCode());
+    }
+
+    public function test_truncate_rejects_an_unsupported_keep_size(): void
+    {
+        $ref = basename($this->file);
+
+        self::assertSame(400, $this->controller()->truncate(Request::create('/_logui/logs/truncate', 'POST', ['ref' => $ref, 'keep' => '7']))->getStatusCode());
+    }
+
+    public function test_truncate_denied_when_guard_refuses(): void
+    {
+        self::assertSame(403, $this->controller('prod')->truncate(Request::create('/_logui/logs/truncate', 'POST', ['ref' => basename($this->file), 'keep' => '0']))->getStatusCode());
     }
 }

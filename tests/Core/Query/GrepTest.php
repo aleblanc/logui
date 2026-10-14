@@ -34,7 +34,7 @@ final class GrepTest extends TestCase
     }
 
     /** @return Row */
-    private function row(string $message, ?string $context = null, string $level = 'error'): array
+    private function row(string $message, ?string $context = null, string $level = 'error', ?string $extra = null): array
     {
         return [
             'date' => '2026-10-13T12:00:00+00:00',
@@ -45,7 +45,10 @@ final class GrepTest extends TestCase
             'level' => $level,
             'message' => $message,
             'context' => $context,
-            'extra' => null,
+            'extra' => $extra,
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
         ];
     }
 
@@ -84,6 +87,17 @@ final class GrepTest extends TestCase
         self::assertTrue($grep->matches($this->row('Matched route', '{"request_id":"abc123"}')));
         self::assertFalse($grep->matches($this->row('Matched route', '{"request_id":"zzz"}')));
         self::assertFalse($grep->matches($this->row('Matched route', null)));
+    }
+
+    public function test_the_extra_is_searched_too(): void
+    {
+        // The request id lives in `extra` (stamped by ProfileIdProcessor); searching it is how you
+        // pivot from a request to the lines it wrote.
+        $row = $this->row('Matched route', null, 'info', '{"logui_id":"4f2a9c01"}');
+
+        self::assertTrue((new Grep('4f2a9c01'))->matches($row));
+        self::assertTrue((new Grep('4f2a9c0[0-9]', asRegex: true))->matches($row));
+        self::assertFalse((new Grep('nope'))->matches($row));
     }
 
     public function test_regex_mode_matches_patterns(): void

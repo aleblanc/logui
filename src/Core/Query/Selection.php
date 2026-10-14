@@ -8,7 +8,7 @@ use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 
 /**
  * Everything the explorer's controls contribute next to the query box: the search term, and the
- * levels and channels ticked in the fields panel.
+ * types, levels and channels ticked in the fields panel.
  *
  * This is deliberately *not* folded into the LogQL query. Rewriting the user's text every time a
  * checkbox moves would fight whatever they are in the middle of typing, and round-tripping a
@@ -28,31 +28,52 @@ final class Selection
     /** @var array<string,true> */
     private readonly array $channels;
 
+    /** @var array<string,true> */
+    private readonly array $types;
+
     /**
      * @param list<string> $levels
      * @param list<string> $channels
      * @param list<string> $excluding records mentioning any of these paths are dropped — see {@see matchesSearch()}
+     * @param list<string> $types     row types to keep: log, request, command
+     * @param string|null  $pattern   normalised message pattern to keep — see {@see Patterns}
      */
     public function __construct(
         array $levels = [],
         array $channels = [],
         private readonly ?Grep $grep = null,
         private readonly array $excluding = [],
+        array $types = [],
+        private readonly ?string $pattern = null,
     ) {
         // Indexed by value: matching happens once per row, so it must be a hash lookup.
         $this->levels = array_fill_keys(array_map(strtolower(...), $levels), true);
         $this->channels = array_fill_keys($channels, true);
+        $this->types = array_fill_keys($types, true);
     }
 
     public function isEmpty(): bool
     {
-        return [] === $this->levels && [] === $this->channels && null === $this->grep && [] === $this->excluding;
+        return [] === $this->levels && [] === $this->channels && [] === $this->types && null === $this->grep && [] === $this->excluding && null === $this->pattern;
     }
 
     /** @param Row $row */
     public function matches(array $row): bool
     {
-        return $this->matchesSearch($row) && $this->matchesFacets($row);
+        return $this->matchesSearch($row) && $this->matchesFacets($row) && $this->matchesPattern($row);
+    }
+
+    /**
+     * The pattern half — keep only rows whose message normalises to the picked pattern.
+     *
+     * Applied after the counts (like the facets), so picking one pattern narrows the chart without
+     * erasing the others from the list you picked it from.
+     *
+     * @param Row $row
+     */
+    public function matchesPattern(array $row): bool
+    {
+        return null === $this->pattern || Patterns::normalize($row['message']) === $this->pattern;
     }
 
     /**
@@ -104,6 +125,10 @@ final class Selection
      */
     public function matchesFacets(array $row): bool
     {
+        if ([] !== $this->types && !isset($this->types[$row['type']])) {
+            return false;
+        }
+
         if ([] !== $this->levels && !isset($this->levels[strtolower($row['level'])])) {
             return false;
         }

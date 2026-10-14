@@ -13,18 +13,23 @@ reads your **raw `.log` files** directly (Monolog, nginx access/error, …).
 **No separate store. No new database. No front-end build.**
 
 ![LogUI — log explorer](screenshots/explore.png)
-*The landing page: search box with an opt-in `regexp` mode, zoomable histogram stacked by level,
-a fields panel built from what the query actually matched, and a live tail. Records are one dense
-monospace line; click one to unfold every field.*
+*The landing page: search box with an opt-in `regexp` mode, zoomable histogram stacked by level with
+a p95 latency overlay, KPI cards, a fields panel (type / level / channel / file / patterns) built
+from what the query actually matched, and a live tail. Records are one dense monospace line; click
+one to unfold every field.*
 
 ![LogUI — log explorer, light theme](screenshots/explore-light.png)
 *Same view in the light theme. Three themes ship (dark / light / sepia), each with its own backdrop.*
 
-![LogUI — request dashboard](screenshots/requests.png)
-*Request list: clickable stats, HTTP + console profiles, method / level / SQL columns, themes.*
+![LogUI — compare with the previous period](screenshots/explore-compare.png)
+*“compare” overlays the same window one period earlier as muted ghost bars with a solid level cap,
+so you can see at a glance whether a spike is new.*
 
 ![LogUI — request detail](screenshots/detail.png)
 *Request detail: timing, RAM start→peak, SQL count, and the request's own log records (filterable by level & channel).*
+
+![LogUI — files tab](screenshots/files.png)
+*Files tab: every discovered `.log` with its size, and a guarded control to shrink a file to its last N MB.*
 
 ![LogUI — health tab](screenshots/health.png)
 *Health tab (sepia theme): host cards (uptime, load, memory, aggregate disk usage — red over 85%) and the per-filesystem disks table.*
@@ -33,13 +38,21 @@ monospace line; click one to unfold every field.*
 
 - Auto-capture: **HTTP requests**, **console commands**, **Monolog records** (level counts + the request's records), **uncaught exceptions**, **SQL queries** (count + slow, when `doctrine/dbal` is present).
 - Pure-PHP stats (`memory_get_usage`/`peak` + a Doctrine middleware) — **no PHP extension required**.
-- **Telemetry appended to a log file** (`LOGUI@` sentinel), read back by the UI — no database. Written **directly** (not through Monolog), so it works in prod regardless of `fingers_crossed`/`rotating_file` handlers. Reads are **tail-bounded** (multi-GB logs are fine).
+- **Telemetry appended to a log file** (`LOGUI@` sentinel), read back by the explorer, where every request and command is a row of type `request` / `command` — no database. Written **directly** (not through Monolog), so it works in prod regardless of `fingers_crossed`/`rotating_file` handlers. Reads are **tail-bounded** (multi-GB logs are fine).
 - **Request detail** shows that request's log records (all channels, even ones your file handlers drop), filterable by level/channel.
-- **Raw `.log` viewer** (Files tab): multi-format parser (Monolog line **and JSON** formatters, Symfony console logs, nginx access/error, ANSI-stripped) + auto-discovery of Monolog handler files + a scan of your log directories.
+- **Raw `.log` viewer** (Files tab): multi-format parser (Monolog line **and JSON** formatters, Symfony console logs, nginx access/error, ANSI-stripped) + auto-discovery of Monolog handler files + a scan of your log directories. Each file can be **shrunk to its last N MB** (or emptied) when it has grown too large — a guarded, destructive `POST`, gated by `allow_truncate`.
 - **Log explorer** — *the landing page* (`/_logui`): a **search box**, a **zoomable time histogram** and a **live tail**, over **one file or all of them at once**.
   - **Search first**: type `payment failed` and get the lines that say so — **case-insensitive**, message *and* context, regex syntax treated as literal text. A **`regexp` checkbox** turns the same box into a pattern search when you want one. **Select any text in the logs** and a one-click *Grep* button offers to search for it.
   - **LogQL is opt-in**, folded behind a link under the search box: `{file="var/log/dev.log", level="error"} |= "payment" != "healthcheck" | json | status >= 500` — stream selector (`=`, `!=`, `=~`, `!~`), line filters (`|=`, `!=`, `|~`, `!~`), `| json`, and label filters (`| status >= 500`).
-  - **Fields panel** (left): one collapsible group per field — `level`, `channel`, `file` — listing the values that actually occur with their counts and share of the matches. Tick to filter. Built from the current result set, not a hard-coded list, and ANDed with the query instead of rewriting it.
+  - **Fields panel** (left): one collapsible group per field — `type`, `level`, `channel`, `file` — listing the values that actually occur with their counts and share of the matches. Tick to filter. Built from the current result set, not a hard-coded list, and ANDed with the query instead of rewriting it.
+  - **Correlation pivots**: every record is stamped with the id of the request that wrote it (`extra.logui_id`, searchable). Expand a log line → *open request*; expand a request → *logs of this request* (fills the search with the id) or *around this moment* (the window ±2 s, no filters).
+  - **Request timeline**: an expanded request draws its log records and slow queries on one SVG strip, from `0 ms` to its total duration.
+  - **Latency line**: the histogram overlays p50/p95 request latency per bucket on its own scale (bars count lines, the line measures time), with the p95 in the hover tooltip.
+  - **Log patterns**: a `patterns` facet groups messages by shape (numbers, ids, dates, quoted strings → `<n>`, `<uuid>`, `<date>`, `<str>`), so the one event firing a thousand times a minute is a single row. Click to keep only that shape.
+  - **Context lines**: a `± lines` button on any log line fetches the records immediately around it (located by byte offset, so a stack trace or the request that caused it shows up) — `more` doubles the window up to ±50.
+  - **Compare with the previous period**: a `compare` toggle draws ghost bars for the same window one period earlier, a delta in the Records card, and a `new` badge on patterns absent last time.
+  - **Readable stack traces**: multi-frame traces (in a message, a context value or an exception) are rendered as a frame list with vendor frames folded away; pick **PhpStorm** or **VS Code** and `file:line` becomes a click that opens your editor.
+  - **Saved views & keyboard**: name and store the current view (config `views` or personal, in `localStorage`); navigate with `j`/`k`, expand with `e`, focus search with `/`, pan with `[`/`]`, `?` for the cheat sheet.
   - **Expandable records**: one dense monospace line each; click to unfold every field, with the context pretty-printed and syntax-highlighted. `expand all`, `wrap`, `clear` and a **row-count select** (50 → 1000, default 100) in the panel header. Expanding survives a refresh, including while tailing.
   - **Live starts clean**: pressing *Live* empties the list so the call you are about to make is the only thing on screen; leaving it reloads the window's history.
   - Histogram: bars stacked by level with per-level gradients, **drag to zoom**, click a bar to jump to it, double-click to zoom out, `←/→` to pan. KPI cards above it (records, errors, warnings, rate, query time).
@@ -127,23 +140,90 @@ log_ui:
     ignore_commands: []                # commands never profiled — wildcards ok ('scheduler:*')
     ignore_paths: ['/_wdt', '/_profiler']  # never profiled (the UI path is always added)
     capture_monolog: true              # auto-wire the handler onto every Monolog channel
+    correlate_records: true            # stamp every record with extra.logui_id (its request)
     discover_monolog: true             # auto-list files from Monolog handlers (Files tab)
     log_dirs: ['%kernel.logs_dir%']    # directories scanned for *.log (Files tab)
     external_logs: []                  # extra .log files to expose (outside the dirs above)
     redact_keys: [password, passwd, secret, token, authorization, api_key]
     health_services: []                # systemd units shown on the Health tab (e.g. [nginx, mariadb, php8.4-fpm])
+    allow_truncate: true               # Files tab: a button to shrink a log to its last N MB (destructive)
+    views:                             # named explorer views: name => query string
+        'Errors 24h': 'levels[]=error&span=86400000'
 ```
+
+### Mounting under a sub-path
+
+`ui_path` is the address the **browser** uses — every link and AJAX call on the page is built from
+it. If you serve LogUI under a prefix (e.g. `/bourse/_logui`), set `ui_path` to that full path **and**
+make sure the routes answer there too, so the two agree:
+
+```yaml
+# config/packages/log_ui.yaml
+log_ui:
+    ui_path: /bourse/_logui
+```
+```yaml
+# config/routes/log_ui.yaml — mount the routes under the same prefix
+log_ui:
+    resource: '@LogUiBundle/config/routes.php'
+    prefix: /bourse            # omit if a reverse proxy already strips /bourse before Symfony sees it
+```
+
+If a reverse proxy rewrites `/bourse/_logui` → `/_logui` before it reaches Symfony, keep the routes
+unprefixed (the default) and only set `ui_path`. The rule of thumb: **`ui_path` must be the URL the
+browser hits, and a request to `ui_path` must actually reach the bundle's routes.**
+
+### View your nginx and PHP logs too
+
+LogUI isn't limited to your Symfony/Monolog log. The parser also understands **nginx access logs**
+(combined format), **nginx error logs** and **PHP error logs** (`php_errors.log`, FPM), so you can
+read and search them in the explorer and the Files tab alongside your app log — same histogram,
+facets, live tail and search. Point `external_logs` at the files (or `log_dirs` at a directory that
+holds them):
+
+```yaml
+log_ui:
+    external_logs:
+        - /var/log/nginx/access.log
+        - /var/log/nginx/error.log
+        - /var/log/php8.4-fpm.log      # or your php_errors.log
+    # or scan a whole directory for *.log:
+    log_dirs: ['%kernel.logs_dir%', '/var/log/nginx']
+```
+
+The PHP process must be able to **read** those paths (they are often owned by `root`/`adm` — add
+LogUI's user to the right group, or point at a copy your rotation already produces). nginx access
+lines are tagged `channel = access` with a level derived from the HTTP status (5xx → error), so
+`{channel="access"} | ...` or the level facet filters them like any other record.
+
+### `logui:check` — a log alarm for cron and CI
+
+`logui:check` counts matching records over a recent window and exits non-zero when there are at
+least `--min` of them, so a cron line can page you when errors spike:
+
+```bash
+# every 5 minutes: alert if 10+ errors were logged in the last 5 minutes
+*/5 * * * * php bin/console logui:check '{level="error"}' --since=5m --min=10 || mail -s 'errors' you@example.com
+```
+
+Options: a LogQL `query` argument, `--grep=`, `--since=5m` (`s`/`m`/`h`/`d`), `--min=1`,
+`--types=`, `--levels=`, `--files=` (comma-separated), `--format=text|json`. It reuses the
+explorer's own query engine, so the count matches the UI exactly.
 
 ### Why is my log file full of `LOGUI@{…}` lines?
 
 Because that is where LogUI keeps its data. It writes **one `LOGUI@{json}` line per HTTP request
 and per console command** — duration, RAM start→peak, SQL count and slow queries, level counts, and
-the request's own log records. The **Requests** tab reads those lines back. That is the whole
+the request's own log records. The explorer reads those lines back as `request`/`command` rows
+(header only; the capture is decoded when a row is expanded). That is the whole
 "no separate store, no database" design.
 
-They are **deliberately hidden from the log explorer** — they belong to the Requests tab. So a file
-that contains nothing else looks empty in the explorer; it tells you so rather than showing a blank
-list.
+They show up in the explorer as rows of type **`request`** and **`command`** — one dense line each
+(method, label, status, duration, RAM, SQL), expandable to the full capture. Tick `type` in the
+Fields panel, or open the **Requests** tab, which is simply the explorer with
+`types[]=request&types[]=command`. The search box and LogQL see the whole capture:
+`payment failed` finds the requests that logged it, and
+`{type="request"} | json | status >= 500 | duration_ms > 1000` is a profiler query.
 
 On a back-office that is one line per action, and it is the point. On a **public site** it is one
 line per page view, and on a **per-minute cron** it is a line a minute whether or not the command
@@ -160,7 +240,7 @@ log_ui:
 ```
 
 Turning capture off leaves **the log explorer and the Files tab working exactly as before** — they
-read your ordinary log files and never needed the telemetry. You lose the Requests tab, nothing
+read your ordinary log files and never needed the telemetry. You lose the request and command rows, nothing
 else.
 
 #### Give the telemetry its own file, with a retention
@@ -317,9 +397,6 @@ future `logui-laravel` adapter would reuse the Core and ship its own (Blade) vie
 
 ### Ideas under consideration
 
-- **Pulse-style stats dashboard** (à la Laravel Pulse): aggregated cards over the telemetry —
-  slowest requests/commands, busiest endpoints, error/exception rates, SQL hotspots, RAM peaks —
-  computed from the existing `LOGUI@` lines, no new store.
 - **Server health & system stats**: lightweight host metrics next to app telemetry —
   CPU/load, RAM, disk usage/inodes, uptime — read from `/proc` (or `sys_getloadavg()`), no agent.
 - **Network usage via vnstat**: parse `vnstat --json` to show daily/monthly bandwidth per interface.

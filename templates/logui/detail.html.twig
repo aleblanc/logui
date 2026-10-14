@@ -4,7 +4,7 @@
 {% set mem = (profile.memStartMb is not null and profile.memEndMb is not null)
     ? profile.memStartMb|number_format(1) ~ '→' ~ profile.memEndMb|number_format(1) ~ ' MB (peak ' ~ profile.memPeakMb|number_format(1) ~ ')'
     : profile.memPeakMb|number_format(1) ~ ' MB peak' %}
-<p><a href="{{ ui_path }}/requests">← back</a></p>
+<p><a href="{{ ui_path }}?types%5B%5D=request&types%5B%5D=command">← back</a></p>
 <h2>{{ profile.label }}</h2>
 <p class="ctx">
     {{ profile.type.value }}
@@ -14,6 +14,9 @@
     {{ mem }} ·
     {{ profile.at|date('c') }}
 </p>
+
+{% set atMs = profile.at.getTimestamp() * 1000 %}
+<p><a href="{{ ui_path }}?from={{ atMs - 2000 }}&amp;to={{ atMs + (profile.durationMs|round) + 2000 }}&amp;grep={{ profile.id|url_encode }}">⇢ logs of this request in the explorer</a></p>
 
 <h3>SQL queries ({{ profile.queries.count }})</h3>
 {% if profile.queries.slow is empty %}

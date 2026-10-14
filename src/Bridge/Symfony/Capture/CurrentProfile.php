@@ -27,6 +27,12 @@ final class CurrentProfile
         return null !== $this->context;
     }
 
+    /** The id of the request/command being profiled, or null when none is active. */
+    public function id(): ?string
+    {
+        return $this->context?->id;
+    }
+
     public function setLabel(string $label): void
     {
         $this->context?->setLabel($label);

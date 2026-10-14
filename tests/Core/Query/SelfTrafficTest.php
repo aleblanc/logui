@@ -31,6 +31,9 @@ final class SelfTrafficTest extends TestCase
             'message' => $message,
             'context' => $context,
             'extra' => null,
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
         ];
     }
 

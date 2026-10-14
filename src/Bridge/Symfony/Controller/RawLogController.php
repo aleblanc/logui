@@ -6,20 +6,26 @@ namespace Aleblanc\LogUi\Bridge\Symfony\Controller;
 
 use Aleblanc\LogUi\Bridge\Symfony\Log\RawLogSources;
 use Aleblanc\LogUi\Bridge\Symfony\Security\UiAccessGuard;
+use Aleblanc\LogUi\Core\Storage\LogTruncator;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 use Aleblanc\LogUi\Core\Storage\TelemetryReader;
+use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Twig\Environment;
 
 final class RawLogController
 {
+    /** Tail sizes offered by the truncate control, in megabytes (0 = empty the file). */
+    private const KEEP_MB = [0, 10, 50, 100, 250, 500];
+
     public function __construct(
         private readonly RawLogSources $sources,
         private readonly PlainLogReader $reader,
         private readonly Environment $twig,
         private readonly UiAccessGuard $guard,
         private readonly string $uiPath,
+        private readonly bool $allowTruncate = true,
     ) {
     }
 
@@ -34,7 +40,48 @@ final class RawLogController
         return $this->render('logs', 'Log files', [
             'sources' => $sources,
             'total_size' => RawLogSources::humanSize((int) array_sum(array_column($sources, 'size'))),
+            'allow_truncate' => $this->allowTruncate,
+            'keep_options' => self::KEEP_MB,
         ]);
+    }
+
+    /**
+     * Shrinks a log file by keeping only its tail (or empties it) — a maintenance action for a
+     * file that has grown to gigabytes.
+     *
+     * Destructive, so: POST only (a cross-site POST carries no auth cookie under SameSite=Lax),
+     * gated by the access guard and the `allow_truncate` option, and the file is resolved through
+     * the allow-list — an unknown or crafted ref truncates nothing.
+     */
+    public function truncate(Request $request): Response
+    {
+        if (!$this->guard->authorize($request)) {
+            return $this->error('Forbidden', 403);
+        }
+
+        if (!$this->allowTruncate) {
+            return $this->error('Log truncation is disabled (set log_ui.allow_truncate: true to enable it).', 403);
+        }
+
+        if (!$request->isMethod('POST')) {
+            return $this->error('Method not allowed', 405);
+        }
+
+        $ref = $request->request->get('ref');
+        $path = \is_string($ref) ? $this->sources->resolve($ref) : null;
+        if (null === $path) {
+            return $this->error('Unknown log source', 403);
+        }
+
+        // Only the sizes the UI offers are accepted; anything else is ignored rather than trusted.
+        $keepMb = (int) $request->request->get('keep', '10');
+        if (!\in_array($keepMb, self::KEEP_MB, true)) {
+            return $this->error('Unsupported keep size', 400);
+        }
+
+        LogTruncator::keepTail($path, $keepMb * 1024 * 1024);
+
+        return new RedirectResponse($this->uiPath.'/logs');
     }
 
     public function view(Request $request): Response

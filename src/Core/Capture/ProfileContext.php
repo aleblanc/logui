@@ -64,7 +64,10 @@ final class ProfileContext
 
     public function recordQuery(string $sql, float $ms): void
     {
-        $this->queries->record($sql, $ms);
+        // When the query began, measured from the start of the request: elapsed-so-far minus how
+        // long the query itself took. That offset is what lets the UI place it on the timeline.
+        $t = ($this->clock->microtime() - $this->startMicro) * 1000 - $ms;
+        $this->queries->record($sql, $ms, $t);
     }
 
     public function setException(\Throwable $e): void

@@ -5,10 +5,13 @@
 {% block content %}
 <div id="explore"
      data-base="{{ ui_path }}/explore"
+     data-ui="{{ ui_path }}"
      data-from="{{ from }}"
      data-to="{{ to }}"
      {# Escaped explicitly, not left to autoescape: this bundle renders inside the host's Twig,
         and these values come straight off the query string. #}
+     data-types="{{ types|default([])|join(',')|e('html_attr') }}"
+     data-pattern="{{ pattern|default('')|e('html_attr') }}"
      data-levels="{{ levels|default([])|join(',')|e('html_attr') }}"
      data-channels="{{ channels|default([])|join(',')|e('html_attr') }}"
      data-selected="{{ selected|join(',')|e('html_attr') }}"
@@ -39,6 +42,12 @@
                 <span class="caret">▸</span> LogQL query
             </button>
             <span class="ctx ex-logql-on" hidden>· a query is active</span>
+            <span class="ex-grow"></span>
+            <select id="ex-editor" class="ex-mini" title="Open file:line in your editor from a stack trace">
+                <option value="">open files in…</option>
+                <option value="phpstorm">PhpStorm</option>
+                <option value="vscode">VS Code</option>
+            </select>
         </p>
 
         <div id="ex-logql" hidden>
@@ -55,6 +64,11 @@
         </div>
 
         <p id="ex-error" class="ex-error" hidden></p>
+
+        <details id="ex-views" class="ex-views" data-views="{{ views|default({})|json_encode|e('html_attr') }}">
+            <summary>Views</summary>
+            <div id="ex-views-list"></div>
+        </details>
     </section>
 
     <div class="ex-kpis" id="ex-kpis"></div>
@@ -64,6 +78,7 @@
             <span class="ex-title">Records over time</span>
             <span class="ctx" id="ex-window"></span>
             <span class="ex-grow"></span>
+            <label class="ex-opt ex-mini" title="Show the same window one period earlier in a chart below"><input type="checkbox" id="ex-compare"> compare</label>
             <select id="ex-span" aria-label="Time range">
                 <option value="900000">last 15 min</option>
                 <option value="3600000" selected>last hour</option>
@@ -79,6 +94,22 @@
             <svg id="ex-hist" preserveAspectRatio="none" aria-label="records over time"></svg>
             <div id="ex-tip" class="ex-tip" hidden></div>
         </div>
+
+        {# Compare: the same window one period earlier, as its own chart on the same scale as the one
+           above — so a spike reads as taller or shorter than before at a glance. #}
+        <div id="ex-prev" class="ex-prev" hidden>
+            <header class="ex-prev-head">
+                <span class="ex-title">Previous period</span>
+                <span class="ctx" id="ex-prev-window"></span>
+                <span class="ex-grow"></span>
+                <span class="ctx" id="ex-prev-delta"></span>
+            </header>
+            <div class="ex-chart">
+                <svg id="ex-hist-prev" preserveAspectRatio="none" aria-label="records over time, previous period"></svg>
+                <div id="ex-tip-prev" class="ex-tip" hidden></div>
+            </div>
+        </div>
+
         <p class="ctx ex-foot" id="ex-stats"></p>
         {# Partial results must announce themselves: a gap you did not know about reads as "no
            such log", and that is how you end up hunting a bug that is simply off-screen. #}
@@ -128,6 +159,7 @@
                 <button type="button" id="ex-refresh" class="ex-ghost ex-mini" title="Re-read up to now">↻ refresh</button>
                 {# Live belongs with the list it fills, not with the query box. #}
                 <button type="button" id="ex-live" class="ex-toggle ex-mini"><i class="ex-dot"></i>Live</button>
+                <button type="button" id="ex-keys-toggle" class="ex-ghost ex-mini" title="Keyboard shortcuts (?)">?</button>
             </header>
             <div class="ex-scroll">
                 <table class="ex-rows">
@@ -153,6 +185,21 @@
         </svg>
         Grep <b id="ex-sel-text"></b>
     </button>
+</div>
+
+{# Keyboard cheat sheet, toggled with `?` or the Logs-header hint button. #}
+<div id="ex-keys" class="ex-keys" hidden>
+    <h5>Keyboard</h5>
+    <dl>
+        <dt>/</dt><dd>focus the search</dd>
+        <dt>j / k</dt><dd>next / previous row</dd>
+        <dt>e / Enter</dt><dd>expand the current row</dd>
+        <dt>l</dt><dd>toggle live tail</dd>
+        <dt>r</dt><dd>refresh</dd>
+        <dt>[ / ]</dt><dd>pan earlier / later</dd>
+        <dt>?</dt><dd>this cheat sheet</dd>
+        <dt>Esc</dt><dd>close</dd>
+    </dl>
 </div>
 
 {# Full-viewport tint flashed when a record arrives live. Decorative, never intercepts clicks. #}
@@ -231,6 +278,17 @@
 .ex-chart { position:relative; }
 #ex-hist { width:100%; height:170px; display:block; cursor:crosshair; user-select:none; touch-action:none; }
 #ex-hist .ex-bar { animation:exGrow .45s cubic-bezier(.2,.9,.3,1) both; transform-box:fill-box; transform-origin:bottom; }
+#ex-hist .ex-lat { fill:none; stroke:var(--accent); stroke-width:1.6; stroke-linejoin:round; }
+#ex-hist .ex-lat-dot { fill:var(--accent); }
+#ex-hist .ex-lat-label { fill:var(--accent); font-size:10px; }
+/* Compare: the previous period in its own chart below, on the same scale as the main one. */
+.ex-prev { margin-top:10px; border-top:1px dashed var(--line); padding-top:8px; }
+.ex-prev-head { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:4px; }
+.ex-prev #ex-hist-prev { width:100%; height:120px; display:block; }
+.ex-prev-delta b { font-variant-numeric:tabular-nums; }
+/* Variation direction — up is worse (more records), down is better. Shared by the tooltip and the delta. */
+.ex-prev-delta b.up, .ex-tip .r em.up { color:var(--err); }
+.ex-prev-delta b.down, .ex-tip .r em.down { color:var(--ok,#2ea043); }
 @keyframes exGrow { from { transform:scaleY(0); opacity:.3; } to { transform:scaleY(1); opacity:1; } }
 .ex-tip { position:absolute; pointer-events:none; background:var(--bg); color:var(--txt);
     border:1px solid var(--line); box-shadow:0 8px 28px rgba(0,0,0,.35);
@@ -299,6 +357,46 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 .ex-rows .trunc { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ex-rows .lvl { font-size:10px; letter-spacing:.3px; text-transform:uppercase; color:var(--tint,var(--mut)); }
 .ex-rows .lvl::before { content:'■ '; font-size:9px; }
+/* Profile rows: a request or a command listed among the logs. */
+.ex-rows .ex-ptype { font:600 10px/1 var(--mono); color:var(--accent); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+.ex-rows .ex-pstats { color:var(--mut); margin-left:8px; font-size:10.5px; }
+.ex-rows .ex-pstats.bad { color:var(--err); }
+.ex-prof { font:11.5px/1.5 var(--mono); }
+.ex-prof .meta { color:var(--mut); margin:0 0 8px; }
+.ex-prof h6 { margin:10px 0 4px; font:600 10px/1 ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+.ex-rec { width:100%; border-collapse:collapse; table-layout:fixed; }
+.ex-rec col.c-t { width:64px; } .ex-rec col.c-l { width:74px; } .ex-rec col.c-c { width:94px; }
+.ex-rec td { padding:2px 6px; vertical-align:top; border-bottom:1px solid color-mix(in srgb, var(--line) 45%, transparent); overflow-wrap:anywhere; }
+.ex-rec td.t { text-align:right; color:var(--mut); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ex-actions { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 0; }
+.ex-actions a, .ex-actions button { font:11px/1 ui-sans-serif,system-ui,sans-serif; }
+.ex-tl { width:100%; height:38px; display:block; margin:4px 0 2px; }
+.ex-tl-axis { display:flex; justify-content:space-between; font:10px/1 var(--mono); color:var(--mut); margin-bottom:6px; }
+.ex-ctx { font:11px/1.5 var(--mono); border-left:2px solid var(--line); margin:8px 0; padding-left:8px; }
+.ex-ctx .pivot { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+.ex-ctx .t { color:var(--mut); font-variant-numeric:tabular-nums; }
+.ex-new-badge { font:600 9px/1 ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.3px;
+    color:var(--accent); border:1px solid var(--accent); border-radius:3px; padding:0 3px; margin-left:4px; }
+.ex-trace { font:11px/1.5 var(--mono); }
+.ex-frame.vendor { opacity:.55; }
+.ex-vendor > summary { cursor:pointer; color:var(--mut); }
+.ex-trace-head { white-space:pre-wrap; margin-bottom:4px; }
+.ex-views { margin:10px 2px 0; font-size:.78rem; }
+.ex-views > summary { cursor:pointer; color:var(--mut); }
+.ex-views > summary:hover { color:var(--accent); }
+#ex-views-list { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; }
+.ex-view { display:inline-flex; align-items:center; gap:4px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:3px 9px; }
+.ex-view a { color:var(--txt); }
+.ex-view-del { background:transparent; border:0; color:var(--mut); cursor:pointer; padding:0 2px; font-size:11px; }
+.ex-view-del:hover { color:var(--err); }
+.ex-rows tr.ex-cur td { box-shadow: inset 2px 0 0 var(--accent); }
+.ex-keys { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); z-index:30;
+    background:var(--bg); border:1px solid var(--accent); box-shadow:0 10px 40px rgba(0,0,0,.45);
+    border-radius:12px; padding:16px 20px; min-width:240px; }
+.ex-keys h5 { margin:0 0 10px; font:600 11px/1 ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); }
+.ex-keys dl { display:grid; grid-template-columns:max-content 1fr; gap:4px 14px; margin:0; font-size:.8rem; }
+.ex-keys dt { font:600 11.5px/1.5 var(--mono); color:var(--accent); }
+.ex-keys dd { margin:0; color:var(--txt); }
 .ex-rows.wrap .trunc { white-space:pre-wrap; overflow-wrap:anywhere; }
 .ex-inferred { opacity:.6; border-bottom:1px dotted currentColor; cursor:help; }
 
@@ -382,24 +480,43 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     buckets: [],
     interval: 60000,
     preset: 3600000,         // last range picked from the select — what "reset zoom" goes back to
-    facets: { level: {}, channel: {}, file: {} },
+    facets: { type: {}, level: {}, channel: {}, file: {} },
+    profiles: { count: 0, failed: 0, p50: 0, p95: 0, sql: 0 },
+    patterns: [],
+    pattern: root.dataset.pattern || '',
+    compare: false,
+    curTotal: 0,              // records in the current window — for the vs-previous delta
+    prevBuckets: [],          // the previous period's buckets, drawn in the chart below
+    prevByTs: {},             // previous count keyed by the aligned current-window ts (tooltip variation)
+    prevInterval: 0,
+    prevFrom: 0,
+    prevTotal: 0,
+    prevPatterns: null,       // set of pattern strings seen last period — drives the "new" badge
+    types: splitList(root.dataset.types),
     matched: 0,
-    telemetry: 0,   // records skipped because they are LogUI's own — explains an empty list
     levels: splitList(root.dataset.levels),
     channels: splitList(root.dataset.channels),
     files: splitList(root.dataset.selected),
-    open: { level: true, channel: true, file: false },   // which field groups are unfolded
+    open: { type: true, level: true, channel: true, file: false },   // which field groups are unfolded
     sources: JSON.parse(root.dataset.sources || '[]'),
     seen: Object.create(null),   // keys already on screen during this live session
     polledTo: 0                  // how far the polling fallback has read
   };
 
-  // The three selectable fields, in the order the panel shows them.
+  // The selectable fields, in the order the panel shows them. `type` first: it is the one that
+  // turns the explorer into the request list.
   var FIELDS = [
+    { key: 'type', label: 'type', picked: function () { return state.types; } },
     { key: 'level', label: 'level', picked: function () { return state.levels; } },
     { key: 'channel', label: 'channel', picked: function () { return state.channels; } },
     { key: 'file', label: 'file', picked: function () { return state.files; } }
   ];
+  var TYPES = ['log', 'request', 'command'];
+
+  /** The live list behind a field key — looked up each time because clearFilters() replaces them. */
+  function listFor(key) {
+    return { type: state.types, level: state.levels, channel: state.channels, file: state.files }[key];
+  }
 
   function splitList(raw) {
     return (raw || '').split(',').filter(function (v) { return v !== ''; });
@@ -429,9 +546,11 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     }
     // Nothing ticked in a group means "no restriction" — same convention as the server.
     state.files.forEach(function (f) { p.append('files[]', f); });
+    state.types.forEach(function (t) { p.append('types[]', t); });
     state.levels.forEach(function (l) { p.append('levels[]', l); });
     state.channels.forEach(function (c) { p.append('channels[]', c); });
     if (!$('ex-self').checked) p.set('include_self', '1');
+    if (state.pattern) p.set('pattern', state.pattern);
     if (extra) Object.keys(extra).forEach(function (key) { p.set(key, extra[key]); });
     return p;
   }
@@ -568,7 +687,9 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         state.interval = res.body.interval;
         state.facets = res.body.facets;
         state.matched = res.body.matched;
-        state.telemetry = res.body.telemetry;
+        state.profiles = res.body.profiles;
+        state.patterns = res.body.patterns || [];
+        state.curTotal = res.body.total;
 
         // While following, the authoritative window is the one the server actually read — it ends
         // at the server's clock, not ours. Adopt it before drawing so the bars land on the axis.
@@ -582,9 +703,48 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         renderFacets();
         renderKpis(res.body);
         showTruncated(res.body);
-        countRows();   // the telemetry count arrives here, the empty message depends on it
+
+        if (state.compare) {
+          loadCompare(res.body);
+        } else {
+          state.prevBuckets = [];
+          state.prevByTs = {};
+          state.prevPatterns = null;
+          $('ex-prev').hidden = true;
+        }
       })
       .catch(function () { showError('Could not load the histogram.'); });
+  }
+
+  /** The same window one period earlier, fetched and drawn as its own chart below the main one. */
+  function loadCompare(primary) {
+    var span = state.to - state.from;
+    $('ex-prev').hidden = false;
+    $('ex-prev-delta').textContent = 'comparing…';
+    fetchJson('/histogram', { from: state.from - span, to: state.to - span, top: 200 })
+      .then(function (res) {
+        if (!res.ok) return;
+        state.prevBuckets = res.body.buckets || [];
+        state.prevInterval = res.body.interval;
+        state.prevFrom = res.body.from;
+        state.prevTotal = res.body.total;
+        state.prevPatterns = {};
+        (res.body.patterns || []).forEach(function (p) { state.prevPatterns[p.pattern] = true; });
+        // Align each previous bucket onto the current window's time axis for the tooltip lookup.
+        state.prevByTs = {};
+        state.prevBuckets.forEach(function (b) { state.prevByTs[b.ts + span] = b.count; });
+        draw();
+        renderKpis(primary);
+        renderFacets();
+      })
+      .catch(function () { /* a failed comparison is not worth interrupting the view for */ });
+  }
+
+  /** The percentage change of cur relative to prev, with a direction class. */
+  function variation(cur, prev) {
+    if (undefined === prev || 0 === prev) return { text: cur > 0 ? 'new' : '—', cls: '' };
+    var pct = Math.round((cur - prev) / prev * 100);
+    return { text: (pct > 0 ? '+' : '') + pct + '%', cls: pct > 0 ? 'up' : (pct < 0 ? 'down' : '') };
   }
 
   function loadRows() {
@@ -604,13 +764,26 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     ['error', 'critical', 'alert', 'emergency'].forEach(function (l) { errors += h.facets.level[l] || 0; });
     warnings = h.facets.level.warning || 0;
 
+    var recordsNote = h.truncated ? 'budget reached — partial' : fmtSpan(h.interval) + ' buckets';
+    if (state.compare && state.prevPatterns) {
+      var delta = h.total - state.prevTotal;
+      var sign = delta > 0 ? '+' : '';
+      var ratio = state.prevTotal ? sign + Math.round(delta / state.prevTotal * 100) + '%' : (delta ? 'new' : '0%');
+      recordsNote = 'vs previous: ' + ratio;
+    }
+
     var cards = [
-      { label: 'Records', value: h.total.toLocaleString(), note: h.truncated ? 'budget reached — partial' : fmtSpan(h.interval) + ' buckets' },
+      { label: 'Records', value: h.total.toLocaleString(), note: recordsNote },
       { label: 'Errors', value: errors.toLocaleString(), note: pct(errors, h.matched), tint: colourOf('error') },
       { label: 'Warnings', value: warnings.toLocaleString(), note: pct(warnings, h.matched), tint: colourOf('warning') },
       { label: 'Rate', value: (h.total / minutes).toFixed(h.total / minutes < 10 ? 1 : 0), note: 'records / min' },
       { label: 'Query', value: h.tookMs + ' ms', note: Object.keys(h.facets.file).length + ' file(s) scanned' }
     ];
+
+    if (h.profiles && h.profiles.count) {
+      cards.push({ label: 'Requests', value: h.profiles.count.toLocaleString(), note: 'p95 ' + fmtMs(h.profiles.p95) + ' · ' + h.profiles.sql.toLocaleString() + ' SQL' });
+      cards.push({ label: 'Failed', value: h.profiles.failed.toLocaleString(), note: pct(h.profiles.failed, h.profiles.count).replace('of matches', 'of requests'), tint: colourOf('error') });
+    }
 
     var box = $('ex-kpis');
     box.textContent = '';
@@ -658,9 +831,94 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     var box = $('ex-groups');
     box.textContent = '';
     FIELDS.forEach(function (field) { box.appendChild(groupNode(field)); });
+    if (state.patterns.length || state.pattern) box.appendChild(patternsGroup());
 
-    var any = state.levels.length + state.channels.length + state.files.length;
+    var any = state.types.length + state.levels.length + state.channels.length + state.files.length + (state.pattern ? 1 : 0);
     $('ex-clear').hidden = 0 === any;
+  }
+
+  /** The log-patterns group: one row per distinct message shape, click to keep only that shape. */
+  function patternsGroup() {
+    var details = document.createElement('details');
+    details.className = 'ex-group';
+    details.open = true;
+
+    var summary = document.createElement('summary');
+    var name = tag('span', 'patterns');
+    name.className = 'k';
+    var count = tag('span', state.pattern ? '1 picked' : String(state.patterns.length));
+    count.className = 'c' + (state.pattern ? ' hit' : '');
+    summary.appendChild(name);
+    summary.appendChild(count);
+    details.appendChild(summary);
+
+    var list = document.createElement('div');
+    list.className = 'ex-vals';
+
+    var rows = state.patterns.slice();
+    // A picked pattern can fall out of the current top list; keep it visible so it can be cleared.
+    if (state.pattern && !rows.some(function (p) { return p.pattern === state.pattern; })) {
+      rows.unshift({ pattern: state.pattern, count: 0, sample: state.pattern, level: 'other' });
+    }
+    if (!rows.length) {
+      list.appendChild(tag('p', 'nothing matched')).className = 'ctx';
+    }
+
+    var peak = rows.reduce(function (m, p) { return Math.max(m, p.count); }, 1);
+    rows.forEach(function (p) { list.appendChild(patternNode(p, peak)); });
+
+    details.appendChild(list);
+    return details;
+  }
+
+  function patternNode(p, peak) {
+    var on = state.pattern === p.pattern;
+    var tint = colourOf((p.level || 'other').toLowerCase());
+
+    var label = document.createElement('label');
+    label.className = 'ex-val' + (on ? ' on' : '');
+    label.style.setProperty('--tint', tint);
+    label.title = p.sample;
+
+    var tick = document.createElement('input');
+    tick.type = 'checkbox';
+    tick.checked = on;
+    // Radio semantics: ticking one replaces the pick, unticking clears it.
+    tick.addEventListener('change', function () { pickPattern(tick.checked ? p.pattern : ''); });
+
+    var dot = document.createElement('span');
+    dot.className = 'd';
+
+    var text = tag('span', p.pattern);
+    text.className = 'name';
+
+    // When comparing periods, flag a shape that was absent in the previous window.
+    if (state.compare && state.prevPatterns && !state.prevPatterns[p.pattern]) {
+      var badge = tag('span', 'new');
+      badge.className = 'ex-new-badge';
+      text.appendChild(document.createTextNode(' '));
+      text.appendChild(badge);
+    }
+
+    var n = tag('span', p.count ? p.count.toLocaleString() : '—');
+    n.className = 'n';
+
+    var share = document.createElement('span');
+    share.className = 'share';
+    share.style.width = (p.count / peak * 100).toFixed(1) + '%';
+
+    label.appendChild(tick);
+    label.appendChild(dot);
+    label.appendChild(text);
+    label.appendChild(n);
+    label.appendChild(share);
+    return label;
+  }
+
+  function pickPattern(pattern) {
+    state.pattern = pattern;
+    restartIfLive();
+    refresh();
   }
 
   /** One collapsible field: `<details>` so folding works without a line of script. */
@@ -709,6 +967,12 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   function valuesOf(field) {
     var counts = state.facets[field.key] || {};
     var names = Object.keys(counts);
+
+    if ('type' === field.key) {
+      // Always the three, in a fixed order: an unticked `request` at zero is how you learn
+      // that requests can be listed here at all.
+      return TYPES.map(function (name) { return { name: name, count: counts[name] || 0 }; });
+    }
 
     if ('file' === field.key) {
       state.sources.forEach(function (s) { if (names.indexOf(s.ref) === -1) names.push(s.ref); });
@@ -800,7 +1064,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   }
 
   function toggleValue(key, name, on) {
-    var list = 'level' === key ? state.levels : ('channel' === key ? state.channels : state.files);
+    var list = listFor(key);
     var at = list.indexOf(name);
     if (on && at === -1) list.push(name);
     if (!on && at !== -1) list.splice(at, 1);
@@ -809,9 +1073,11 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   }
 
   function clearFilters() {
+    state.types = [];
     state.levels = [];
     state.channels = [];
     state.files = [];
+    state.pattern = '';
     restartIfLive();
     refresh();
   }
@@ -825,7 +1091,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
    * timestamp, file and text are the same line for any purpose the UI has.
    */
   function keyOf(row) {
-    return row.ts + '|' + row.file + '|' + row.message;
+    return row.profile ? 'p|' + row.profile.id : row.ts + '|' + row.file + '|' + row.message;
   }
 
   function render(rows) {
@@ -842,6 +1108,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     rows.forEach(function (row) { body.appendChild(rowNode(row, reopen)); });
     countRows();
     allExpanded = false;
+    cur = -1;   // the keyboard cursor; the rows it pointed at are gone
     $('ex-expand').textContent = 'expand all';
   }
 
@@ -854,19 +1121,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       : emptyReason();
   }
 
-  /**
-   * An empty list is a dead end unless it says why.
-   *
-   * The common surprise: in production the telemetry file *is* the application's log, so a file
-   * can be a gigabyte, be offered in the Fields panel with its size, and still show nothing —
-   * every line in it belongs to the Requests tab.
-   */
   function emptyReason() {
-    if (state.telemetry > 0) {
-      return 'Nothing to show here — all ' + state.telemetry.toLocaleString() +
-        ' records in this window are LogUI\'s own telemetry, which lives in the Requests tab.';
-    }
-
     return 'No matching lines in this window.';
   }
 
@@ -910,9 +1165,21 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     }
     tr.appendChild(lvl);
 
-    tr.appendChild(cell(row.channel, 'ctx trunc'));
-    tr.appendChild(cell(row.file, 'ctx trunc'));
-    tr.appendChild(cell(oneLine(row.message), 'trunc'));
+    if (row.profile) {
+      tr.classList.add('ex-prow');
+      var kind = document.createElement('td');
+      var chip = tag('span', 'request' === row.type ? (row.profile.method || 'HTTP') : '$_');
+      chip.className = 'ex-ptype';
+      chip.title = row.type;
+      kind.appendChild(chip);
+      tr.appendChild(kind);
+      tr.appendChild(cell(row.file, 'ctx trunc'));
+      tr.appendChild(profileCell(row));
+    } else {
+      tr.appendChild(cell(row.channel, 'ctx trunc'));
+      tr.appendChild(cell(row.file, 'ctx trunc'));
+      tr.appendChild(cell(oneLine(row.message), 'trunc'));
+    }
 
     var detail = detailRow(row);
 
@@ -929,6 +1196,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 
       var open = tr.classList.toggle('open');
       detail.hidden = !open;
+      if (open && detail.load) detail.load();
     });
 
     // The pair travels together: callers append a fragment, not two loose rows.
@@ -945,6 +1213,58 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     return String(text || '').replace(/\s*\n\s*/g, ' ⏎ ');
   }
 
+  /** `GET app_login  200 · 83.8 ms · 4.0 MB · 3 SQL ⚠` — the request list, in one cell. */
+  function profileCell(row) {
+    var p = row.profile;
+    var td = document.createElement('td');
+    var wrap = document.createElement('span');
+    wrap.className = 'trunc';
+    wrap.style.display = 'block';
+    wrap.appendChild(tag('span', row.message));
+    var stats = tag('span', profileStats(p));
+    stats.className = 'ex-pstats' + (p.failed ? ' bad' : '');
+    wrap.appendChild(stats);
+    td.appendChild(wrap);
+    return td;
+  }
+
+  function profileStats(p) {
+    var parts = [];
+    if (p.status !== null && p.status !== undefined) parts.push('request' === rowTypeOf(p) ? String(p.status) : 'exit ' + p.status);
+    parts.push(fmtMs(p.duration_ms));
+    parts.push(p.mem_peak_mb.toFixed(1) + ' MB');
+    parts.push(p.sql + ' SQL' + (p.slow ? ' ⚠' : ''));
+    if (p.exception) parts.push('exception');
+    return parts.join(' · ');
+  }
+
+  function rowTypeOf(p) { return 'cli' === p.type ? 'command' : 'request'; }
+
+  function fmtMs(ms) {
+    return ms >= 10000 ? (ms / 1000).toFixed(1) + ' s' : (ms >= 100 ? Math.round(ms) : ms.toFixed(1)) + ' ms';
+  }
+
+  function titleEl(text) { var t = document.createElementNS(NS, 'title'); t.textContent = text; return t; }
+  function timelineNode(p) {
+    var dur = Math.max(1, p.duration_ms), W = 1000, H = 38;
+    var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, preserveAspectRatio: 'none', class: 'ex-tl' });
+    svg.appendChild(svgEl('rect', { x: 0, y: 16, width: W, height: 6, rx: 3, fill: 'currentColor', 'fill-opacity': '.12' }));
+    (p.queries.slow || []).forEach(function (q) {
+      if (typeof q.t !== 'number') return;                       // old lines carry no offset
+      var x = q.t / dur * W, w = Math.max(2, q.ms / dur * W);
+      var bar = svgEl('rect', { x: x.toFixed(1), y: 13, width: Math.min(W - x, w).toFixed(1), height: 12, rx: 2, fill: colourOf('warning'), 'fill-opacity': '.85' });
+      bar.appendChild(titleEl('+' + q.t.toFixed(1) + ' ms · ' + fmtMs(q.ms) + ' · ' + q.sql)); svg.appendChild(bar);
+    });
+    (p.records || []).forEach(function (r) {
+      var x = Math.min(W, r.t / dur * W);
+      var tick = svgEl('line', { x1: x.toFixed(1), x2: x.toFixed(1), y1: 4, y2: 34, stroke: colourOf((r.level || 'other').toLowerCase()), 'stroke-width': '1.5' });
+      tick.appendChild(titleEl('+' + r.t.toFixed(1) + ' ms · ' + r.level + ' · ' + oneLine(r.msg))); svg.appendChild(tick);
+    });
+    var wrap = document.createElement('div'), axis = document.createElement('div');
+    axis.className = 'ex-tl-axis'; axis.appendChild(tag('span', '0 ms')); axis.appendChild(tag('span', fmtMs(p.duration_ms)));
+    wrap.appendChild(svg); wrap.appendChild(axis); return wrap;
+  }
+
   function detailRow(row) {
     var tr = document.createElement('tr');
     tr.className = 'ex-detail';
@@ -952,6 +1272,28 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 
     var td = document.createElement('td');
     td.colSpan = 6;
+
+    if (row.profile) {
+      // The list only carried the header. The capture — records, slow queries, exception — is
+      // a few kilobytes and is fetched the first time the row is opened.
+      td.className = 'ex-prof';
+      td.appendChild(tag('p', 'loading…')).className = 'ctx';
+      tr.load = function () {
+        if (tr.dataset.loaded) return;
+        tr.dataset.loaded = '1';
+        var p = new URLSearchParams({ file: row.file, ts: String(row.ts || 0), id: row.profile.id });
+        fetch(BASE + '/profile?' + p, { headers: { Accept: 'application/json' } })
+          .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+          .then(function (res) {
+            td.textContent = '';
+            if (!res.ok) { td.appendChild(tag('p', res.body.error || 'Could not load this request.')).className = 'ctx'; return; }
+            profileDetail(td, row, res.body);
+          })
+          .catch(function () { td.textContent = ''; td.appendChild(tag('p', 'Could not load this request.')).className = 'ctx'; });
+      };
+      tr.appendChild(td);
+      return tr;
+    }
 
     var dl = document.createElement('dl');
     dl.className = 'ex-kv';
@@ -966,29 +1308,175 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     });
 
     dl.appendChild(tag('dt', 'message'));
-    dl.appendChild(tag('dd', row.message));
+    var trace = traceNode(row.message);
+    if (trace) {
+      var dd = document.createElement('dd');
+      dd.appendChild(trace);
+      dl.appendChild(dd);
+    } else {
+      dl.appendChild(tag('dd', row.message));
+    }
     td.appendChild(dl);
 
     if (row.context && row.context !== '[]') {
       td.appendChild(contextNode(row.context));
     }
 
+    if (row.extra && row.extra !== '[]') {
+      td.appendChild(tag('h6', 'extra'));
+      td.appendChild(contextNode(row.extra));
+    }
+
+    td.appendChild(actionsFor(row, null));
+
     tr.appendChild(td);
     return tr;
   }
 
+  /** The request detail, built from the full capture. */
+  function profileDetail(td, row, p) {
+    var mem = (p.mem_start_mb !== null && p.mem_end_mb !== null)
+      ? p.mem_start_mb.toFixed(1) + '→' + p.mem_end_mb.toFixed(1) + ' MB (peak ' + p.mem_peak_mb.toFixed(1) + ')'
+      : p.mem_peak_mb.toFixed(1) + ' MB peak';
+    var meta = tag('p', [
+      p.type + (p.method ? ' · ' + p.method : ''),
+      'status ' + (p.status === null ? '—' : p.status),
+      fmtMs(p.duration_ms),
+      mem,
+      p.at
+    ].join(' · '));
+    meta.className = 'meta';
+    td.appendChild(meta);
+
+    if ((p.records || []).length || (p.queries.slow || []).length) td.appendChild(timelineNode(p));
+
+    td.appendChild(tag('h6', 'SQL queries (' + p.queries.count + ')'));
+    if (!p.queries.slow.length) {
+      td.appendChild(tag('p', p.queries.count ? 'No slow queries.' : 'No queries recorded.')).className = 'ctx';
+    } else {
+      var sq = document.createElement('table');
+      sq.className = 'ex-rec';
+      p.queries.slow.forEach(function (q) {
+        var tr = document.createElement('tr');
+        tr.appendChild(tag('td', fmtMs(q.ms))).className = 't';
+        tr.appendChild(tag('td', q.sql));
+        sq.appendChild(tr);
+      });
+      td.appendChild(sq);
+    }
+
+    if (p.exception) {
+      td.appendChild(tag('h6', 'Exception'));
+      td.appendChild(tag('p', p.exception.class + ': ' + p.exception.message)).className = 'ctx';
+      var pre = document.createElement('pre');
+      pre.className = 'ex-json';
+      pre.textContent = p.exception.trace;
+      td.appendChild(traceNode(p.exception.trace) || pre);
+    }
+
+    td.appendChild(tag('h6', 'Log records (' + p.records.length + ')' + (p.truncated ? ' ⚠ truncated' : '')));
+    if (!p.records.length) {
+      td.appendChild(tag('p', 'No records captured for this request.')).className = 'ctx';
+    } else {
+      var table = document.createElement('table');
+      table.className = 'ex-rec';
+      var cg = document.createElement('colgroup');
+      ['c-t', 'c-l', 'c-c', ''].forEach(function (c) { var col = document.createElement('col'); if (c) col.className = c; cg.appendChild(col); });
+      table.appendChild(cg);
+      p.records.forEach(function (r) {
+        var tr = document.createElement('tr');
+        tr.appendChild(tag('td', '+' + r.t.toFixed(1))).className = 't';
+        var lvl = tag('span', r.level);
+        lvl.className = 'lvl';
+        lvl.style.setProperty('--tint', colourOf((r.level || '').toLowerCase()));
+        tr.appendChild(document.createElement('td')).appendChild(lvl);
+        tr.appendChild(tag('td', r.channel)).className = 'ctx';
+        var msg = document.createElement('td');
+        msg.appendChild(tag('div', r.msg));
+        if (r.context && Object.keys(r.context).length) msg.appendChild(contextNode(JSON.stringify(r.context)));
+        tr.appendChild(msg);
+        table.appendChild(tr);
+      });
+      td.appendChild(table);
+    }
+
+    td.appendChild(actionsFor(row, p));
+  }
+
+  /** A deep link into the configured editor, or null when none is picked. */
+  function editorUrl(file, line) {
+    var pref = '';
+    try { pref = localStorage.getItem('logui-editor') || ''; } catch (e) {}
+    if ('phpstorm' === pref) return 'phpstorm://open?file=' + encodeURIComponent(file) + '&line=' + line;
+    if ('vscode' === pref) return 'vscode://file/' + file + ':' + line;
+    return null;
+  }
+
+  // Two frame shapes: PHP's `#0 /path(42): Class->method()` and `at /path:42` styles.
+  var FRAME = /^(?:#\d+ (.+?)\((\d+)\): (.*)|\s*at (.+?):(\d+)(.*))$/;
+
+  /** A stack trace turned into a list of frames (vendor frames folded away); null if it is not one. */
+  function traceNode(text) {
+    var lines = String(text).split('\n'), frames = [], other = [];
+    lines.forEach(function (l) {
+      var m = FRAME.exec(l);
+      if (m) frames.push({ file: m[1] || m[4], line: m[2] || m[5], call: (m[3] || m[6] || '').trim() });
+      else other.push(l);
+    });
+    if (frames.length < 2) return null;
+
+    var box = document.createElement('div');
+    box.className = 'ex-trace';
+    if (other.join('').trim()) box.appendChild(tag('div', other.join('\n'))).className = 'ex-trace-head';
+
+    var run = null;
+    frames.forEach(function (f) {
+      var vendor = f.file.indexOf('/vendor/') !== -1;
+      var el = document.createElement('div');
+      el.className = 'ex-frame' + (vendor ? ' vendor' : '');
+      var url = editorUrl(f.file, f.line), loc = url ? document.createElement('a') : document.createElement('span');
+      if (url) loc.href = url;
+      loc.textContent = f.file + ':' + f.line;
+      el.appendChild(loc);
+      if (f.call) el.appendChild(tag('span', '  ' + f.call)).className = 'ctx';
+      if (vendor) {
+        if (!run) { run = document.createElement('details'); run.className = 'ex-vendor'; run.appendChild(tag('summary', '')); box.appendChild(run); }
+        run.appendChild(el);
+        run.firstChild.textContent = run.children.length - 1 + ' vendor frames';
+      } else {
+        run = null;
+        box.appendChild(el);
+      }
+    });
+
+    return box;
+  }
+
   /** Context is usually JSON; pretty-print and colour it when it parses, show it raw when not. */
   function contextNode(raw) {
+    var frag = document.createDocumentFragment();
     var pre = document.createElement('pre');
     pre.className = 'ex-json';
 
+    var parsed = null;
     try {
-      highlightInto(pre, JSON.stringify(JSON.parse(raw), null, 2));
+      parsed = JSON.parse(raw);
+      highlightInto(pre, JSON.stringify(parsed, null, 2));
     } catch (e) {
       pre.textContent = raw;
     }
+    frag.appendChild(pre);
 
-    return pre;
+    // A stack trace tucked inside the context (e.g. an `exception` key) gets the readable treatment.
+    walkTraces(parsed, frag, 0);
+
+    return frag;
+  }
+
+  function walkTraces(value, target, depth) {
+    if (depth > 3 || null === value) return;
+    if ('string' === typeof value) { var t = traceNode(value); if (t) target.appendChild(t); return; }
+    if ('object' === typeof value) { Object.keys(value).forEach(function (k) { walkTraces(value[k], target, depth + 1); }); }
   }
 
   // Tokenise and append text nodes — never innerHTML, this is log content.
@@ -1026,6 +1514,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     document.querySelectorAll('#ex-body tr.ex-row').forEach(function (tr) {
       tr.classList.toggle('open', allExpanded);
       if (tr.nextElementSibling) tr.nextElementSibling.hidden = !allExpanded;
+      if (allExpanded && tr.nextElementSibling && tr.nextElementSibling.load) tr.nextElementSibling.load();
     });
     $('ex-expand').textContent = allExpanded ? 'collapse all' : 'expand all';
   }
@@ -1042,96 +1531,144 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     return el;
   }
 
-  function draw() {
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.textContent = '';
+  var svgPrev = $('ex-hist-prev'), tipPrev = $('ex-tip-prev');
 
+  function draw() {
     var span = Math.max(1, state.to - state.from);
-    var floor = H - PAD_B;
+
+    // Both charts share one vertical scale, so "taller than last period" reads literally.
     var peak = 1;
     state.buckets.forEach(function (b) { if (b.count > peak) peak = b.count; });
+    if (state.compare) state.prevBuckets.forEach(function (b) { if (b.count > peak) peak = b.count; });
 
-    // One vertical gradient per level, so bars fade towards the baseline instead of
-    // sitting as flat blocks of colour.
+    renderHistogram(svg, tip, state.buckets, {
+      from: state.from, span: span, interval: state.interval, peak: peak,
+      height: H, withLatency: true, withZoom: true, variation: state.compare
+    });
+
+    var prev = $('ex-prev');
+    if (state.compare) {
+      prev.hidden = false;
+      renderHistogram(svgPrev, tipPrev, state.prevBuckets, {
+        from: state.prevFrom, span: span, interval: state.prevInterval || state.interval, peak: peak,
+        height: 120, withLatency: false, withZoom: false, variation: false
+      });
+      paintPrevHead(span);
+    } else {
+      prev.hidden = true;
+    }
+  }
+
+  /** Draws a stacked-by-level histogram into one SVG. Shared by the main chart and the compare chart. */
+  function renderHistogram(targetSvg, tipEl, buckets, o) {
+    var floor = o.height - PAD_B;
+    targetSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + o.height);
+    targetSvg.textContent = '';
+
+    // One vertical gradient per level; ids are namespaced per SVG so the two charts don't collide.
     var defs = svgEl('defs');
     ORDER.forEach(function (level) {
-      var grad = svgEl('linearGradient', { id: 'exg-' + level, x1: '0', y1: '0', x2: '0', y2: '1' });
+      var grad = svgEl('linearGradient', { id: targetSvg.id + '-g-' + level, x1: '0', y1: '0', x2: '0', y2: '1' });
       grad.appendChild(svgEl('stop', { offset: '0', 'stop-color': colourOf(level), 'stop-opacity': '1' }));
       grad.appendChild(svgEl('stop', { offset: '1', 'stop-color': colourOf(level), 'stop-opacity': '.45' }));
       defs.appendChild(grad);
     });
-    svg.appendChild(defs);
+    targetSvg.appendChild(defs);
 
-    drawGrid(floor, peak);
+    drawGrid(targetSvg, floor, o.peak);
 
-    var width = Math.max(1, (state.interval / span) * W - 1.2);
+    var width = Math.max(1, (o.interval / o.span) * W - 1.2);
 
-    state.buckets.forEach(function (bucket) {
-      var x = ((bucket.ts - state.from) / span) * W;
+    buckets.forEach(function (bucket) {
+      var x = ((bucket.ts - o.from) / o.span) * W;
       var y = floor;
 
       // Stacked least-severe first, so errors sit on top and stay visible. Only the last
       // segment drawn — the top of the bar — gets rounded corners.
       var present = ORDER.filter(function (level) { return bucket.levels[level]; });
-
       present.forEach(function (level, i) {
-        var h = (bucket.levels[level] / peak) * (floor - PAD_T);
+        var h = (bucket.levels[level] / o.peak) * (floor - PAD_T);
         y -= h;
         var rect = svgEl('rect', {
           x: x.toFixed(2), y: y.toFixed(2),
           width: width.toFixed(2), height: Math.max(0.6, h).toFixed(2),
-          fill: 'url(#exg-' + level + ')',
+          fill: 'url(#' + targetSvg.id + '-g-' + level + ')',
           rx: i === present.length - 1 ? Math.min(2, width / 2).toFixed(2) : 0
         });
         rect.setAttribute('class', 'ex-bar');
-        svg.appendChild(rect);
+        targetSvg.appendChild(rect);
       });
 
-      var hit = svgEl('rect', { x: x.toFixed(2), y: 0, width: width.toFixed(2), height: H, fill: 'transparent' });
-      hit.addEventListener('mousemove', function (e) { showTip(e, bucket); });
-      hit.addEventListener('mouseleave', hideTip);
-      hit.addEventListener('click', function () { zoomTo(bucket.ts, bucket.ts + state.interval); });
-      svg.appendChild(hit);
+      var hit = svgEl('rect', { x: x.toFixed(2), y: 0, width: width.toFixed(2), height: o.height, fill: 'transparent' });
+      hit.addEventListener('mousemove', function (e) { showTip(targetSvg, tipEl, e, bucket, o.variation); });
+      hit.addEventListener('mouseleave', function () { tipEl.hidden = true; });
+      if (o.withZoom) hit.addEventListener('click', function () { zoomTo(bucket.ts, bucket.ts + o.interval); });
+      targetSvg.appendChild(hit);
     });
 
-    svg.appendChild(svgEl('line', {
-      x1: 0, x2: W, y1: floor, y2: floor, stroke: 'currentColor', 'stroke-opacity': '.3'
-    }));
+    targetSvg.appendChild(svgEl('line', { x1: 0, x2: W, y1: floor, y2: floor, stroke: 'currentColor', 'stroke-opacity': '.3' }));
 
-    drawTimeAxis(span);
+    if (o.withLatency) drawLatency(targetSvg, buckets, o.span, o.from, floor);
+    drawTimeAxis(targetSvg, o.span, o.from, o.height);
   }
 
-  function drawGrid(floor, peak) {
+  function drawLatency(targetSvg, buckets, span, from, floor) {   // bars count lines, the line measures time: own scale
+    var pts = buckets.filter(function (b) { return b.latency && b.latency.n > 0; });
+    if (!pts.length) return;
+    var top = pts.reduce(function (m, b) { return Math.max(m, b.latency.p95); }, 1), d = '';
+    pts.forEach(function (b, i) {
+      var x = ((b.ts + state.interval / 2 - from) / span) * W, y = floor - (b.latency.p95 / top) * (floor - PAD_T) * 0.9;
+      d += (i ? ' L ' : 'M ') + x.toFixed(2) + ' ' + y.toFixed(2);
+      targetSvg.appendChild(svgEl('circle', { cx: x.toFixed(2), cy: y.toFixed(2), r: 1.8, class: 'ex-lat-dot' }));
+    });
+    targetSvg.appendChild(svgEl('path', { d: d, class: 'ex-lat' }));
+    var label = svgEl('text', { x: W - 4, y: PAD_T + 9, 'text-anchor': 'end', class: 'ex-lat-label' });
+    label.textContent = 'p95 ≤ ' + fmtMs(top); targetSvg.appendChild(label);
+  }
+
+  function drawGrid(targetSvg, floor, peak) {
     [0.5, 1].forEach(function (ratio) {
       var y = floor - ratio * (floor - PAD_T);
-      svg.appendChild(svgEl('line', {
+      targetSvg.appendChild(svgEl('line', {
         x1: 0, x2: W, y1: y, y2: y, stroke: 'currentColor', 'stroke-opacity': '.08', 'stroke-dasharray': '3 5'
       }));
       var text = svgEl('text', { x: 4, y: y - 3, fill: 'currentColor', 'fill-opacity': '.35', 'font-size': '10' });
       text.textContent = Math.round(peak * ratio).toLocaleString();
-      svg.appendChild(text);
+      targetSvg.appendChild(text);
     });
   }
 
-  function drawTimeAxis(span) {
+  function drawTimeAxis(targetSvg, span, from, height) {
     var ticks = 6;
     for (var i = 0; i <= ticks; i++) {
       var x = (i / ticks) * W;
       var text = svgEl('text', {
-        x: Math.min(W - 2, Math.max(2, x)), y: H - 6,
+        x: Math.min(W - 2, Math.max(2, x)), y: height - 6,
         fill: 'currentColor', 'fill-opacity': '.4', 'font-size': '10',
         'text-anchor': i === 0 ? 'start' : (i === ticks ? 'end' : 'middle')
       });
-      text.textContent = fmtClock(state.from + (i / ticks) * span);
-      svg.appendChild(text);
+      text.textContent = fmtClock(from + (i / ticks) * span);
+      targetSvg.appendChild(text);
     }
   }
 
-  function showTip(event, bucket) {
-    tip.textContent = '';
+  /** The previous-period chart's heading: its window, and how the current total compares to it. */
+  function paintPrevHead(span) {
+    $('ex-prev-window').textContent = fmtClock(state.prevFrom) + ' → ' + fmtClock(state.prevFrom + span);
+    var el = $('ex-prev-delta');
+    el.textContent = '';
+    el.appendChild(document.createTextNode(state.prevTotal.toLocaleString() + ' rec · current '));
+    var v = variation(state.curTotal, state.prevTotal);
+    var em = tag('b', v.text);
+    em.className = v.cls;
+    el.appendChild(em);
+  }
+
+  function showTip(targetSvg, tipEl, event, bucket, withVariation) {
+    tipEl.textContent = '';
     var head = document.createElement('b');
     head.textContent = fmtClock(bucket.ts) + '  ·  ' + bucket.count + ' rec';
-    tip.appendChild(head);
+    tipEl.appendChild(head);
 
     ORDER.slice().reverse().forEach(function (level) {
       if (!bucket.levels[level]) return;
@@ -1144,17 +1681,37 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       left.appendChild(document.createTextNode(level));
       line.appendChild(left);
       line.appendChild(tag('em', String(bucket.levels[level])));
-      tip.appendChild(line);
+      tipEl.appendChild(line);
     });
 
-    tip.hidden = false;
-    var box = svg.getBoundingClientRect();
+    if (bucket.latency && bucket.latency.n) {
+      var lat = document.createElement('div');
+      lat.className = 'r';
+      lat.appendChild(tag('span', 'p95 · ' + bucket.latency.n + ' req'));
+      lat.appendChild(tag('em', fmtMs(bucket.latency.p95)));
+      tipEl.appendChild(lat);
+    }
+
+    if (withVariation) {
+      var prev = state.prevByTs[bucket.ts];
+      var v = variation(bucket.count, prev);
+      var row = document.createElement('div');
+      row.className = 'r';
+      row.appendChild(tag('span', 'vs previous'));
+      var em = tag('em', v.text + (undefined === prev ? '' : ' (' + prev + ')'));
+      em.className = v.cls;
+      row.appendChild(em);
+      tipEl.appendChild(row);
+    }
+
+    tipEl.hidden = false;
+    var box = targetSvg.getBoundingClientRect();
     var left = event.clientX - box.left + 14;
-    tip.style.left = Math.min(box.width - tip.offsetWidth - 6, left) + 'px';
-    tip.style.top = '6px';
+    tipEl.style.left = Math.min(box.width - tipEl.offsetWidth - 6, left) + 'px';
+    tipEl.style.top = '6px';
   }
 
-  function hideTip() { tip.hidden = true; }
+  function hideTip() { tip.hidden = true; tipPrev.hidden = true; }
 
   // --- Drag to zoom: the gesture people expect from Grafana / VictoriaMetrics.
   var drag = null, band = null;
@@ -1204,6 +1761,76 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     hideTip();
     stopLive();
     refresh();
+  }
+
+  function pivotAround(from, to) {           // every file, every level, no search: only the window
+    $('ex-grep').value = ''; $('ex-q').value = '';
+    state.types = []; state.levels = []; state.channels = []; state.pattern = '';
+    state.follow = false; state.from = from; state.to = to;
+    stopLive(); refresh();
+  }
+  function pivotToRequest(id, atMs, durationMs) {
+    pivotAround(atMs - 2000, atMs + Math.round(durationMs || 0) + 2000);
+    $('ex-grep').value = id; $('ex-grep-re').checked = false; refresh();
+  }
+  function actionButton(text, onClick) { var b = document.createElement('button'); b.type = 'button'; b.className = 'ex-ghost ex-mini'; b.textContent = text; b.addEventListener('click', function (e) { e.stopPropagation(); onClick(); }); return b; }
+  function actionLink(text, href) { var a = document.createElement('a'); a.href = href; a.textContent = text; a.addEventListener('click', function (e) { e.stopPropagation(); }); return a; }
+  function requestIdOf(row) {
+    if (!row.extra) return null;
+    try { var x = JSON.parse(row.extra); return x && /^[A-Za-z0-9]+$/.test(String(x.logui_id || '')) ? x.logui_id : null; } catch (e) { return null; }
+  }
+  function actionsFor(row, p) {              // p = full profile for a request row, else null
+    var bar = document.createElement('div'); bar.className = 'ex-actions';
+    if (row.ts) bar.appendChild(actionButton('around this moment', function () { pivotAround(row.ts - 2000, row.ts + (p ? Math.round(p.duration_ms) : 0) + 2000); }));
+    if (p) {
+      bar.appendChild(actionButton('logs of this request', function () { pivotToRequest(p.id, row.ts, p.duration_ms); }));
+      bar.appendChild(actionLink('permalink ↗', root.dataset.ui + '/' + p.id));
+    } else {
+      var id = requestIdOf(row); if (id) bar.appendChild(actionLink('open request ↗', root.dataset.ui + '/' + id));
+      if (typeof row.offset === 'number') bar.appendChild(actionButton('± 5 lines', function () { toggleContext(bar, row); }));
+    }
+    return bar;
+  }
+
+  /** Show (or hide) the lines around a record, fetched by its byte offset. */
+  function toggleContext(bar, row) {
+    var next = bar.nextElementSibling;
+    if (next && next.classList.contains('ex-ctx-wrap')) { next.remove(); return; }
+    var wrap = document.createElement('div');
+    wrap.className = 'ex-ctx-wrap';
+    bar.parentNode.insertBefore(wrap, bar.nextElementSibling);
+    loadContext(wrap, row, 5);
+  }
+
+  function loadContext(wrap, row, n) {
+    wrap.textContent = 'loading…';
+    var p = new URLSearchParams({ file: row.file, offset: String(row.offset || 0), n: String(n) });
+    fetch(BASE + '/context?' + p, { headers: { Accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (body) { renderContext(wrap, row, body, n); })
+      .catch(function () { wrap.textContent = 'Could not load context.'; });
+  }
+
+  function renderContext(wrap, row, body, n) {
+    wrap.textContent = '';
+    var box = document.createElement('div');
+    box.className = 'ex-ctx';
+    (body.rows || []).forEach(function (r, i) {
+      var line = document.createElement('div');
+      if (i === body.pivot) line.className = 'pivot';
+      var t = tag('span', r.ts ? fmtStamp(r.ts) : '—');
+      t.className = 't';
+      var lvl = tag('span', (r.level || '').toLowerCase());
+      lvl.className = 'lvl';
+      lvl.style.setProperty('--tint', colourOf((r.level || 'other').toLowerCase()));
+      line.appendChild(t);
+      line.appendChild(document.createTextNode(' '));
+      line.appendChild(lvl);
+      line.appendChild(document.createTextNode(' ' + oneLine(r.message)));
+      box.appendChild(line);
+    });
+    wrap.appendChild(box);
+    if (n < 50) wrap.appendChild(actionButton('more', function () { loadContext(wrap, row, Math.min(50, n * 2)); }));
   }
 
   // ---------------------------------------------------------------- live tail
@@ -1416,6 +2043,10 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
 
   $('ex-clear-rows').addEventListener('click', clearRows);
   $('ex-self').addEventListener('change', run);
+  $('ex-compare').addEventListener('change', function () { state.compare = this.checked; state.prevPatterns = null; refresh(); });
+
+  try { $('ex-editor').value = localStorage.getItem('logui-editor') || ''; } catch (e) {}
+  $('ex-editor').addEventListener('change', function () { try { localStorage.setItem('logui-editor', this.value); } catch (e) {} });
 
   $('ex-limit').addEventListener('change', function () {
     // While live, the limit is only a ceiling on the DOM; reloading would clear the capture.
@@ -1450,19 +2081,90 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     refresh();
   });
 
-  document.addEventListener('keydown', function (e) {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    var span = state.to - state.from;
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-
+  var cur = -1;
+  function rowsOnScreen() { return [].slice.call(document.querySelectorAll('#ex-body tr.ex-row')); }
+  function moveCursor(delta) {
+    var rows = rowsOnScreen();
+    if (!rows.length) return;
+    cur = Math.max(0, Math.min(rows.length - 1, cur + delta));
+    rows.forEach(function (r, i) { r.classList.toggle('ex-cur', i === cur); });
+    rows[cur].scrollIntoView({ block: 'nearest' });
+  }
+  function pan(dir) {
     // Panning pins the window: you are looking at a particular stretch of the past.
+    var span = state.to - state.from;
     state.follow = false;
-    var step = (e.key === 'ArrowLeft' ? -1 : 1) * span / 4;
-    state.from += step;
-    state.to += step;
+    state.from += dir * span / 4;
+    state.to += dir * span / 4;
     refresh();
+  }
+  document.addEventListener('keydown', function (e) {
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+    var rows = rowsOnScreen();
+    switch (e.key) {
+      case '/': e.preventDefault(); $('ex-grep').focus(); break;
+      case 'j': moveCursor(1); break;
+      case 'k': moveCursor(-1); break;
+      case 'e': case 'Enter': if (rows[cur]) rows[cur].click(); break;
+      case 'l': $('ex-live').click(); break;
+      case 'r': $('ex-refresh').click(); break;
+      case '[': case 'ArrowLeft': pan(-1); break;
+      case ']': case 'ArrowRight': pan(1); break;
+      case '?': $('ex-keys').hidden = !$('ex-keys').hidden; break;
+      case 'Escape': $('ex-keys').hidden = true; pop.hidden = true; break;
+    }
   });
 
+  $('ex-keys-toggle').addEventListener('click', function () { $('ex-keys').hidden = !$('ex-keys').hidden; });
+
+  // ---- saved views ------------------------------------------------------
+  function personalViews() {
+    try { return JSON.parse(localStorage.getItem('logui-views') || '{}') || {}; } catch (e) { return {}; }
+  }
+  function savePersonalViews(v) { try { localStorage.setItem('logui-views', JSON.stringify(v)); } catch (e) {} }
+
+  /** The current view as a query string a link can restore — relative (span), not pinned to now. */
+  function viewQuery() {
+    var p = params();
+    p.delete('from'); p.delete('to');
+    if (state.follow) p.set('span', String(state.span));
+    return p.toString();
+  }
+
+  function renderViews() {
+    var box = $('ex-views-list');
+    box.textContent = '';
+
+    var config = {};
+    try { config = JSON.parse($('ex-views').dataset.views || '{}') || {}; } catch (e) {}
+    Object.keys(config).forEach(function (name) { box.appendChild(viewLink(name, config[name], false)); });
+
+    var personal = personalViews();
+    Object.keys(personal).forEach(function (name) { box.appendChild(viewLink(name, personal[name], true)); });
+
+    var save = document.createElement('button');
+    save.type = 'button'; save.className = 'ex-ghost ex-mini'; save.textContent = '+ save current view';
+    save.addEventListener('click', function () {
+      var name = prompt('Name this view'); if (!name) return;
+      var v = personalViews(); v[name] = viewQuery(); savePersonalViews(v); renderViews();
+    });
+    box.appendChild(save);
+  }
+
+  function viewLink(name, qs, deletable) {
+    var row = document.createElement('div'); row.className = 'ex-view';
+    var a = document.createElement('a'); a.href = location.pathname + '?' + qs; a.textContent = name;
+    row.appendChild(a);
+    if (deletable) {
+      var del = document.createElement('button');
+      del.type = 'button'; del.className = 'ex-view-del'; del.textContent = '✕'; del.title = 'Delete this view';
+      del.addEventListener('click', function (e) { e.preventDefault(); var v = personalViews(); delete v[name]; savePersonalViews(v); renderViews(); });
+      row.appendChild(del);
+    }
+    return row;
+  }
+
+  renderViews();
   refresh();
 })();
 </script>

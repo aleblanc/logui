@@ -36,6 +36,9 @@ final class LogQLTest extends TestCase
             'message' => $message,
             'context' => $context,
             'extra' => null,
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
         ];
     }
 
@@ -229,5 +232,18 @@ final class LogQLTest extends TestCase
         $evaluator = new Evaluator((new Parser())->parse(''));
 
         self::assertCount(2, iterator_to_array($evaluator->filter($rows), false));
+    }
+
+    /** A request or a command is selectable like a file or a level — `{type="request"}`. */
+    public function test_type_is_a_stream_label(): void
+    {
+        $row = $this->row();
+        $row['type'] = 'request';
+
+        $matches = static fn (string $query): bool => (new Evaluator((new Parser())->parse($query)))->matches($row);
+
+        self::assertTrue($matches('{type="request"}'));
+        self::assertFalse($matches('{type="log"}'));
+        self::assertTrue($matches('| type = "request"'), 'and usable as a label filter');
     }
 }

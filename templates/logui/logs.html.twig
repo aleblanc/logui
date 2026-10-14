@@ -7,17 +7,33 @@
 {% else %}
 {# Biggest first: on a server you open this page to find out what is eating the disk. #}
 <table>
-    <thead><tr><th>Source</th><th>Path</th><th class="num">Size</th></tr></thead>
+    <thead><tr><th>Source</th><th>Path</th><th class="num">Size</th>{% if allow_truncate %}<th>Shrink</th>{% endif %}</tr></thead>
     <tbody>
     {% for s in sources|sort((a, b) => b.size <=> a.size) %}
         <tr>
             <td><a href="{{ ui_path }}/logs/view?ref={{ s.ref|url_encode }}">{{ s.label }}</a></td>
             <td class="ctx">{{ s.ref }}</td>
             <td class="num{{ s.size > 536870912 ? ' hl-danger' : (s.size > 104857600 ? ' hl-warning') }}">{{ s.size_human }}</td>
+            {% if allow_truncate %}
+            <td>
+                {# Destructive: POST + a confirm. Keeps the last N MB (0 empties the file). #}
+                <form method="post" action="{{ ui_path }}/logs/truncate" class="logui-trunc"
+                      onsubmit="return confirm('Shrink {{ s.label|e('js') }}? This permanently discards the older part of the file.');">
+                    <input type="hidden" name="ref" value="{{ s.ref|e('html_attr') }}">
+                    <select name="keep" aria-label="How much of {{ s.label|e('html_attr') }} to keep">
+                        {% for mb in keep_options %}
+                            <option value="{{ mb }}"{{ mb == 50 ? ' selected' }}>{{ mb == 0 ? 'empty it' : 'keep last ' ~ mb ~ ' MB' }}</option>
+                        {% endfor %}
+                    </select>
+                    <button type="submit">Shrink</button>
+                </form>
+            </td>
+            {% endif %}
         </tr>
     {% endfor %}
     </tbody>
 </table>
 <p class="ctx">{{ sources|length }} file(s) · {{ total_size }} on disk</p>
+{% if allow_truncate %}<p class="ctx">“Shrink” keeps the newest lines and discards the rest — handy for a log that has grown to gigabytes. Set <code>log_ui.allow_truncate: false</code> to hide it.</p>{% endif %}
 {% endif %}
 {% endblock %}

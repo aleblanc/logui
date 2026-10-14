@@ -31,4 +31,20 @@ final class QueryCounterTest extends TestCase
         self::assertSame('slow', $stats->slow[0]['sql']);
         self::assertSame(91.2, $stats->slow[0]['ms']);
     }
+
+    public function test_a_slow_query_carries_its_offset_when_given(): void
+    {
+        $counter = new QueryCounter(slowMs: 50.0);
+        $counter->record('slow', 91.234, 12.345);
+
+        self::assertSame(12.3, $counter->stats()->slow[0]['t'] ?? null);
+    }
+
+    public function test_a_slow_query_has_no_offset_key_when_none_is_given(): void
+    {
+        $counter = new QueryCounter(slowMs: 50.0);
+        $counter->record('slow', 91.234);
+
+        self::assertArrayNotHasKey('t', $counter->stats()->slow[0]);
+    }
 }

@@ -61,6 +61,17 @@ final class ProfileContextTest extends TestCase
         self::assertSame(1, $context->finish(200)->queries->count);
     }
 
+    public function test_a_slow_query_remembers_when_it_ran(): void
+    {
+        $clock = new FixedClock(new \DateTimeImmutable('2026-06-10T14:00:00+00:00'), micro: 1000.0);
+        $context = $this->context($clock);
+
+        $clock->advanceMs(200.0);
+        $context->recordQuery('SELECT 1', 80.0);   // offset = 200 elapsed − 80 ran = 120 ms in
+
+        self::assertSame(120.0, $context->finish(200)->queries->slow[0]['t'] ?? null);
+    }
+
     public function test_exception_is_null_by_default(): void
     {
         $context = $this->context(new FixedClock(new \DateTimeImmutable('2026-06-10T14:00:00+00:00')));

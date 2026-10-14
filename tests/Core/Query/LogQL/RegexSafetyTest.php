@@ -30,6 +30,9 @@ final class RegexSafetyTest extends TestCase
             'message' => $message,
             'context' => null,
             'extra' => null,
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
         ];
     }
 

@@ -86,6 +86,47 @@ final class PlainLogReaderTest extends TestCase
         self::assertSame([], iterator_to_array((new PlainLogReader())->read('/no/such/file.log')));
     }
 
+    public function test_rows_carry_their_byte_offset(): void
+    {
+        [$offsets] = $this->twentyLines();
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file), false);
+
+        self::assertSame($offsets[10], $rows[10]['offset'], "row 10's offset is the byte position of its line");
+    }
+
+    public function test_read_between_slices_by_byte_offset(): void
+    {
+        [$offsets] = $this->twentyLines();
+
+        $between = iterator_to_array((new PlainLogReader())->readBetween($this->file, $offsets[5], $offsets[8]), false);
+
+        self::assertSame(['line 5', 'line 6', 'line 7'], array_column($between, 'message'));
+    }
+
+    /**
+     * Writes 20 Monolog lines and returns their byte offsets.
+     *
+     * @return array{list<int>,list<string>}
+     */
+    private function twentyLines(): array
+    {
+        $lines = [];
+        for ($i = 0; $i < 20; ++$i) {
+            $lines[] = sprintf('[2026-06-10T14:00:00+00:00] app.INFO: line %d', $i);
+        }
+        file_put_contents($this->file, implode("\n", $lines)."\n");
+
+        $offsets = [];
+        $pos = 0;
+        foreach ($lines as $line) {
+            $offsets[] = $pos;
+            $pos += \strlen($line) + 1;
+        }
+
+        return [$offsets, $lines];
+    }
+
     public function test_parses_symfony_console_handler_lines(): void
     {
         file_put_contents(

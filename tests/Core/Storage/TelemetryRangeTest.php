@@ -78,15 +78,17 @@ final class TelemetryRangeTest extends TestCase
         self::assertFalse($rows[0]['ts_inferred'], 'it is a real date, not one guessed from the file');
     }
 
-    public function test_the_raw_line_is_preserved_so_the_filters_still_match(): void
+    public function test_a_telemetry_line_is_a_request_or_command_row_not_a_raw_line(): void
     {
-        // Both the explorer and the Files tab drop these by looking for the sentinel in the
-        // message. Rewriting the message would make telemetry leak into both views.
+        // A request is a record like any other: the explorer lists it under its label, and the
+        // whole payload stays in `context` so the search box and `| json` can still see inside.
         $this->writeTelemetry(1);
 
         $rows = iterator_to_array($this->reader()->readTail($this->file), false);
 
-        self::assertStringStartsWith(TelemetryReader::SENTINEL, $rows[0]['message']);
+        self::assertSame('command', $rows[0]['type']);
+        self::assertSame('app:import', $rows[0]['message'], 'the label, not the raw JSON');
+        self::assertStringContainsString('"label":"app:import"', (string) $rows[0]['context']);
     }
 
     public function test_a_range_inside_a_telemetry_only_file_returns_only_that_range(): void

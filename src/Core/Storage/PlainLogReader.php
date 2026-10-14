@@ -17,6 +17,8 @@ use Aleblanc\LogUi\Core\Time\TimestampParser;
  *                             write plain log files, so they're out of scope for this viewer.
  *  - nginx access (combined): ip - - [date] "METHOD path HTTP/x" status bytes ...
  *  - nginx/PHP error:         2026/06/10 12:40:01 [error] ... | [date] LEVEL: message
+ *  - LogUI telemetry:         LOGUI@{json} — one captured request/command, exposed as a row of
+ *                             type `request` or `command` carrying its header (see TelemetryHeader).
  *  - anything else:           kept verbatim as a raw row (never dropped).
  *
  * ANSI colour escape sequences (common in captured console output) are stripped from every line.
@@ -24,7 +26,7 @@ use Aleblanc\LogUi\Core\Time\TimestampParser;
  * Monolog limitation: a message that itself embeds a JSON blob may have that fragment
  * misattributed to the context field. Well-formed Monolog output parses correctly.
  *
- * @phpstan-type Row array{date:string,ts:?int,ts_inferred:bool,file:string,channel:string,level:string,message:string,context:?string,extra:?string}
+ * @phpstan-type Row array{date:string,ts:?int,ts_inferred:bool,file:string,channel:string,level:string,message:string,context:?string,extra:?string,type:string,profile:?array<string,mixed>,offset:int}
  */
 final class PlainLogReader
 {
@@ -239,6 +241,46 @@ final class PlainLogReader
     }
 
     /**
+     * Records whose first line begins at a byte offset in `[from, to)`.
+     *
+     * Used to read the lines around a specific record (context lines): the offset is a plain byte
+     * position, so no timestamp reasoning is involved. When `from > 0` the seek lands mid-line, so
+     * that partial line is dropped before parsing.
+     *
+     * @return \Generator<int,Row>
+     */
+    public function readBetween(string $path, int $from, int $to): \Generator
+    {
+        if (!is_file($path) || $from >= $to) {
+            return;
+        }
+
+        $handle = fopen($path, 'rb');
+        if (false === $handle) {
+            return;
+        }
+
+        try {
+            if ($from > 0) {
+                if (-1 === fseek($handle, $from - 1)) {
+                    return;
+                }
+                // Drop the partial line only when the offset lands mid-line. An offset that is
+                // exactly a record boundary (the "after" window starts on the pivot) must keep its
+                // first line — reading the char before it tells the two cases apart.
+                $prev = fgetc($handle);
+                if ("\n" !== $prev && "\r" !== $prev) {
+                    fgets($handle);
+                }
+            }
+
+            yield from $this->parse($handle, $this->anchorFor($path), $to);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
      * Epoch-ms of a single raw line, used by the seeker to orient itself.
      * Returns null for continuation lines and anything undatable.
      */
@@ -251,16 +293,30 @@ final class PlainLogReader
 
     /**
      * @param resource $handle
+     * @param int|null $stopAt stop before any record whose first line begins at or past this byte
+     *                         offset — used to read a bounded window ending on a record boundary
      *
      * @return \Generator<int,Row>
      */
-    private function parse($handle, int $anchorMs): \Generator
+    private function parse($handle, int $anchorMs, ?int $stopAt = null): \Generator
     {
         /** @var Row|null $current */
         $current = null;
         $allowContinuation = false;
 
-        while (false !== ($raw = fgets($handle))) {
+        while (true) {
+            $lineStart = ftell($handle);
+            $raw = fgets($handle);
+            if (false === $raw) {
+                break;
+            }
+            // A new record starting at or past the stop boundary ends the window; the record that
+            // was being built (which began before it) is still yielded after the loop.
+            if (null !== $stopAt && false !== $lineStart && $lineStart >= $stopAt) {
+                break;
+            }
+            $offset = false === $lineStart ? 0 : $lineStart;
+
             $line = rtrim($raw, "\r\n");
             // Strip ANSI colour escapes (captured console output is full of them).
             $line = preg_replace('/\e\[[0-9;]*m/', '', $line) ?? $line;
@@ -275,6 +331,7 @@ final class PlainLogReader
                     yield $current;
                 }
                 $current = $this->stamp($classified['row'], $anchorMs);
+                $current['offset'] = $offset;
                 $allowContinuation = $classified['monolog'];
 
                 continue;
@@ -291,6 +348,7 @@ final class PlainLogReader
                 yield $current;
             }
             $current = $this->rawRow($line);
+            $current['offset'] = $offset;
             $allowContinuation = false;
         }
 
@@ -304,7 +362,7 @@ final class PlainLogReader
      */
     private function classify(string $line): ?array
     {
-        if (str_starts_with($line, TelemetryReader::SENTINEL) && null !== ($telemetry = $this->classifyTelemetry($line))) {
+        if (str_starts_with($line, TelemetryReader::SENTINEL) && null !== ($telemetry = $this->classifyTelemetry(substr($line, \strlen(TelemetryReader::SENTINEL))))) {
             return $telemetry;
         }
 
@@ -313,6 +371,12 @@ final class PlainLogReader
         }
 
         if (preg_match(self::MONOLOG, $line, $m)) {
+            // Older installs logged the telemetry through Monolog: the profile is the message.
+            if (str_starts_with($m['message'], TelemetryReader::SENTINEL)
+                && null !== ($telemetry = $this->classifyTelemetry(substr($m['message'], \strlen(TelemetryReader::SENTINEL))))) {
+                return $telemetry;
+            }
+
             return ['monolog' => true, 'row' => [
                 'date' => $m['date'],
                 'ts' => null,
@@ -323,6 +387,9 @@ final class PlainLogReader
                 'message' => $m['message'],
                 'context' => ('' !== ($m['context'] ?? '')) ? $m['context'] : null,
                 'extra' => ('' !== ($m['extra'] ?? '')) ? $m['extra'] : null,
+                'type' => 'log',
+                'profile' => null,
+                'offset' => 0,
             ]];
         }
 
@@ -337,6 +404,9 @@ final class PlainLogReader
                 'message' => $m['message'],
                 'context' => null,
                 'extra' => null,
+                'type' => 'log',
+                'profile' => null,
+                'offset' => 0,
             ]];
         }
 
@@ -351,6 +421,9 @@ final class PlainLogReader
                 'message' => $m['req'].' — '.$m['status'],
                 'context' => null,
                 'extra' => null,
+                'type' => 'log',
+                'profile' => null,
+                'offset' => 0,
             ]];
         }
 
@@ -365,6 +438,9 @@ final class PlainLogReader
                 'message' => $m['message'],
                 'context' => null,
                 'extra' => null,
+                'type' => 'log',
+                'profile' => null,
+                'offset' => 0,
             ]];
         }
 
@@ -379,6 +455,9 @@ final class PlainLogReader
                 'message' => $m['message'],
                 'context' => null,
                 'extra' => null,
+                'type' => 'log',
+                'profile' => null,
+                'offset' => 0,
             ]];
         }
 
@@ -386,38 +465,36 @@ final class PlainLogReader
     }
 
     /**
-     * LogUI's own telemetry lines: `LOGUI@{"id":…,"at":"<iso8601>",…}`.
+     * LogUI's own telemetry: one captured request or command, shown as a row of its own type.
      *
-     * The explorer never *shows* these — they belong to the Requests tab — but they must still be
-     * **datable**, and that is not cosmetic. In production the telemetry file is the application's
-     * own log, and it can be mostly telemetry. A line with no timestamp is invisible to the binary
-     * search that locates a time range, and worse, it never satisfies the "we have gone past the
-     * end of the window" test that stops the scan. Both degrade to reading the file whole: on a
-     * 1 GB prod.log that is a gigabyte read per request, twice per page.
+     * Only the header is decoded here (see TelemetryHeader) — the records stay inside `context`
+     * as text, which keeps the search box and `| json` able to see them while the list stays
+     * cheap. The full profile is decoded on demand when a row is expanded.
      *
-     * Only the date is recovered. Everything else stays as the raw line, which is what the
-     * telemetry filter downstream matches on.
+     * @param string $payload the text after the sentinel
      *
      * @return array{monolog:bool,row:Row}|null
      */
-    private function classifyTelemetry(string $line): ?array
+    private function classifyTelemetry(string $payload): ?array
     {
-        // Hand-extracted rather than json_decode()'d: these lines carry a whole profile, often
-        // several kilobytes of records, and the seeker only ever needs the date.
-        if (!preg_match('/"at"\s*:\s*"([^"]{10,40})"/', $line, $m)) {
+        $header = TelemetryHeader::extract($payload);
+        if (null === $header) {
             return null;
         }
 
         return ['monolog' => false, 'row' => [
-            'date' => $m[1],
+            'date' => $header['at'],
             'ts' => null,
             'ts_inferred' => false,
             'file' => '',
-            'channel' => 'logui',
-            'level' => 'info',
-            'message' => $line,
-            'context' => null,
+            'channel' => '',
+            'level' => TelemetryHeader::level($header),
+            'message' => $header['label'],
+            'context' => $payload,
             'extra' => null,
+            'type' => TelemetryHeader::rowType($header['type']),
+            'profile' => $header,
+            'offset' => 0,
         ]];
     }
 
@@ -449,6 +526,9 @@ final class PlainLogReader
             'message' => \is_string($data['message']) ? $data['message'] : (string) json_encode($data['message']),
             'context' => $this->encodePart($data['context'] ?? null),
             'extra' => $this->encodePart($data['extra'] ?? null),
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
         ]];
     }
 
@@ -556,7 +636,7 @@ final class PlainLogReader
     /** @return Row */
     private function rawRow(string $line): array
     {
-        return ['date' => '', 'ts' => null, 'ts_inferred' => false, 'file' => '', 'channel' => '', 'level' => '', 'message' => $line, 'context' => null, 'extra' => null];
+        return ['date' => '', 'ts' => null, 'ts_inferred' => false, 'file' => '', 'channel' => '', 'level' => '', 'message' => $line, 'context' => null, 'extra' => null, 'type' => 'log', 'profile' => null, 'offset' => 0];
     }
 
     private function statusLevel(int $status): string

@@ -7,6 +7,7 @@ namespace Aleblanc\LogUi\Bridge\Symfony;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CommandProfilerListener;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\CurrentProfile;
 use Aleblanc\LogUi\Bridge\Symfony\Capture\RequestProfilerListener;
+use Aleblanc\LogUi\Bridge\Symfony\Command\CheckCommand;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\ExploreController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\HealthController;
 use Aleblanc\LogUi\Bridge\Symfony\Controller\RawLogController;
@@ -16,6 +17,7 @@ use Aleblanc\LogUi\Bridge\Symfony\Health\VnstatService;
 use Aleblanc\LogUi\Bridge\Symfony\Log\RawLogSources;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\HandlerPathDiscovery;
 use Aleblanc\LogUi\Bridge\Symfony\Monolog\LogUiHandler;
+use Aleblanc\LogUi\Bridge\Symfony\Monolog\ProfileIdProcessor;
 use Aleblanc\LogUi\Bridge\Symfony\Security\UiAccessGuard;
 use Aleblanc\LogUi\Bridge\Symfony\Security\UiAuthCookieListener;
 use Aleblanc\LogUi\Bridge\Symfony\Telemetry\TelemetryLogger;
@@ -133,6 +135,10 @@ final class LogUiBundle extends AbstractBundle
                     ->defaultTrue()
                     ->info('Auto-wire the LogUI handler onto every Monolog channel (no manual monolog.yaml edit). Set false (or via env) to disable capture, e.g. in prod.')
                 ->end()
+                ->booleanNode('correlate_records')
+                    ->defaultTrue()
+                    ->info('Stamp every Monolog record with the id of the request/command that wrote it (extra.logui_id).')
+                ->end()
                 ->booleanNode('discover_monolog')->defaultTrue()->end()
                 ->arrayNode('log_dirs')
                     ->scalarPrototype()->end()
@@ -150,6 +156,16 @@ final class LogUiBundle extends AbstractBundle
                     ->scalarPrototype()->end()
                     ->defaultValue([])
                     ->info('systemd units shown on the Health tab via `systemctl is-active` (empty = no services section).')
+                ->end()
+                ->booleanNode('allow_truncate')
+                    ->defaultTrue()
+                    ->info('Show a control on the Files tab to shrink a log file to its last N MB (destructive). Set false to hide it and reject the endpoint.')
+                ->end()
+                ->arrayNode('views')
+                    ->useAttributeAsKey('name')
+                    ->scalarPrototype()->end()
+                    ->defaultValue([])
+                    ->info('Named explorer views: name => query string, e.g. "Errors 24h": "levels[]=error&span=86400000"')
                 ->end()
             ->end();
     }
@@ -204,6 +220,11 @@ final class LogUiBundle extends AbstractBundle
         // It is auto-wired onto every channel via prependExtension(); capture_monolog gates it at runtime.
         $services->set(LogUiHandler::class)->args([new Reference('logui.current'), $config['capture_monolog']])->public();
 
+        // Stamps extra.logui_id on every record so a log line can be traced to its request.
+        $services->set(ProfileIdProcessor::class)
+            ->args([new Reference('logui.current'), $config['correlate_records']])
+            ->tag('monolog.processor');
+
         // ui_password defaults to %env(LOGUI_PASSWORD)%; provide an empty fallback so a missing
         // env var resolves to '' (guard then fail-closes) instead of throwing a container error.
         if (!$builder->hasParameter('env(LOGUI_PASSWORD)')) {
@@ -226,7 +247,7 @@ final class LogUiBundle extends AbstractBundle
         $services->set('logui.rawlog_sources', RawLogSources::class)
             ->args([new Reference('logui.discovery'), [new Reference('logger')], $config['external_logs'], $config['log_dirs'], $config['discover_monolog'], '%kernel.project_dir%']);
         $services->set(RawLogController::class)
-            ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path']])
+            ->args([new Reference('logui.rawlog_sources'), new Reference('logui.plainreader'), new Reference('twig'), new Reference('logui.guard'), $config['ui_path'], $config['allow_truncate']])
             ->public()
             ->tag('controller.service_arguments');
 
@@ -247,9 +268,15 @@ final class LogUiBundle extends AbstractBundle
                 new Reference('twig'),
                 new Reference('logui.guard'),
                 $config['ui_path'],
+                $config['views'],
             ])
             ->public()
             ->tag('controller.service_arguments');
+
+        // CLI health check: non-zero exit when a query matches at least --min records.
+        $services->set(CheckCommand::class)
+            ->args([new Reference('logui.rawlog_sources'), new Reference('logui.explorer')])
+            ->tag('console.command');
 
         // Health tab: read-only host metrics (degrade gracefully when a probe is unavailable).
         $services->set('logui.vnstat', VnstatService::class);

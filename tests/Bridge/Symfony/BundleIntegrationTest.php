@@ -48,29 +48,105 @@ final class BundleIntegrationTest extends TestCase
         self::assertStringContainsString('/_logui/explore', $html, 'the page points at its own JSON endpoints');
     }
 
-    public function test_the_request_list_keeps_its_own_url(): void
+    public function test_the_explorer_knows_the_type_facet(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('data-types=""', $html);
+        self::assertStringContainsString("key: 'type'", $html, 'the fields panel lists the type facet');
+        self::assertStringContainsString('/profile?', $html, 'expanding a request fetches its capture');
+    }
+
+    public function test_the_explorer_offers_the_request_pivots(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('around this moment', $html);
+        self::assertStringContainsString('open request', $html);
+        self::assertStringContainsString('logs of this request', $html);
+    }
+
+    public function test_the_explorer_draws_a_request_timeline(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('function timelineNode', $html);
+        self::assertStringContainsString('.ex-tl', $html);
+    }
+
+    public function test_the_histogram_has_a_latency_line(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('function drawLatency', $html);
+    }
+
+    public function test_the_explorer_can_compare_with_the_previous_period(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('id="ex-compare"', $html);
+    }
+
+    public function test_the_explorer_renders_readable_stack_traces(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('function traceNode', $html);
+    }
+
+    public function test_the_explorer_has_a_views_panel(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('id="ex-views"', $html);
+    }
+
+    public function test_the_explorer_has_a_keyboard_cheat_sheet(): void
+    {
+        $html = (string) $this->kernel->handle(Request::create('/_logui', 'GET'))->getContent();
+
+        self::assertStringContainsString('id="ex-keys"', $html);
+    }
+
+    public function test_the_old_request_list_url_redirects_to_the_explorer_preset(): void
     {
         $response = $this->kernel->handle(Request::create('/_logui/requests', 'GET'));
 
-        self::assertSame(200, $response->getStatusCode());
-        self::assertStringContainsString('profils', (string) $response->getContent());
+        self::assertSame(302, $response->getStatusCode());
+        self::assertStringContainsString('types%5B%5D=request', (string) $response->headers->get('Location'));
     }
 
-    public function test_an_app_request_is_captured_and_visible_in_the_ui(): void
+    public function test_an_app_request_is_captured_and_visible_in_the_explorer(): void
     {
-        // Drive a real app request through the kernel. It 404s (no such route), which still flows
-        // through kernel.request (profile begins) → kernel.exception (captured) → kernel.terminate (written),
-        // and the framework's own Monolog records are mirrored into the profile by LogUiHandler.
         $appRequest = Request::create('/orders/42', 'GET');
         $appResponse = $this->kernel->handle($appRequest);
         $this->kernel->terminate($appRequest, $appResponse);
 
-        // Now read it back through the UI.
-        $uiResponse = $this->kernel->handle(Request::create('/_logui/requests', 'GET'));
-        $html = (string) $uiResponse->getContent();
+        // The explorer's JSON endpoint, filtered to requests, over the default last hour.
+        $uiResponse = $this->kernel->handle(Request::create('/_logui/explore/query', 'GET', ['types' => ['request']]));
+        $body = json_decode((string) $uiResponse->getContent(), true);
 
         self::assertSame(200, $uiResponse->getStatusCode());
-        self::assertStringContainsString('/orders/42', $html, 'the captured request appears in the LogUI list');
+        self::assertSame(1, $body['total'], 'one captured request');
+        self::assertSame('GET /orders/42', $body['rows'][0]['message']);
+        self::assertSame('request', $body['rows'][0]['type']);
+    }
+
+    public function test_every_record_is_stamped_with_the_id_of_its_request(): void
+    {
+        $appRequest = Request::create('/orders/42', 'GET');
+        $appResponse = $this->kernel->handle($appRequest);
+        $this->kernel->terminate($appRequest, $appResponse);
+
+        $log = (string) file_get_contents($this->varDir.'/log/app.log');
+        self::assertMatchesRegularExpression('/"logui_id":"[0-9a-f]{16}"/', $log);
+
+        $uiResponse = $this->kernel->handle(Request::create('/_logui/explore/query', 'GET', ['types' => ['request']]));
+        $body = json_decode((string) $uiResponse->getContent(), true);
+        $id = $body['rows'][0]['profile']['id'];
+
+        self::assertStringContainsString('"logui_id":"'.$id.'"', $log, 'records carry the id of the request that wrote them');
     }
 
     public function test_handler_is_auto_wired_into_monolog_without_manual_config(): void
