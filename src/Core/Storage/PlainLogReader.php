@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aleblanc\LogUi\Core\Storage;
 
+use Aleblanc\LogUi\Core\Model\LogLevel;
 use Aleblanc\LogUi\Core\Time\TimestampParser;
 
 /**
@@ -27,6 +28,7 @@ use Aleblanc\LogUi\Core\Time\TimestampParser;
  * misattributed to the context field. Well-formed Monolog output parses correctly.
  *
  * @phpstan-type Row array{date:string,ts:?int,ts_inferred:bool,file:string,channel:string,level:string,message:string,context:?string,extra:?string,type:string,profile:?array<string,mixed>,offset:int}
+ * @phpstan-type Tick array{ts:?int,level:string,channel:string,type:string,profile:?array<string,mixed>,message:?string,weight:int}
  */
 final class PlainLogReader
 {
@@ -52,6 +54,15 @@ final class PlainLogReader
      * Guards against files that are not perfectly ordered (concatenations, clock steps).
      */
     private const OUT_OF_ORDER_TOLERANCE = 50;
+
+    /** Monolog line header alone — what counting needs, a third of the cost of the full regex. */
+    private const MONOLOG_HEADER = '/^\[([^\]]+)\] ([\w.\-]+)\.([A-Z]+): /';
+
+    /** Info/debug records parsed in full before {@see scanRange()} starts sampling them for patterns. */
+    private const PATTERN_EXACT_RECORDS = 2_000;
+
+    /** Sampling granularity of {@see scanRange()}: blocks are read whole or skipped whole. */
+    public const SAMPLE_BLOCK_BYTES = 256 * 1024;
 
     private const MONOLOG = '/^\[(?<date>[^\]]+)\] (?<channel>[\w.\-]+)\.(?<level>[A-Z]+): (?<message>.*?)(?: (?<context>[\{\[].*?[\}\]]))?(?: (?<extra>[\{\[].*?[\}\]]))?\s*$/';
     // Symfony ConsoleHandler: "HH:MM:SS LEVEL [channel] message". Levels are listed explicitly so
@@ -171,9 +182,11 @@ final class PlainLogReader
      * Lines that carry no date of their own are yielded when they fall inside the scanned window:
      * positionally they belong to the range, and dropping them would silently hide raw log output.
      *
-     * @param (callable(float,int,int,int):void)|null $report receives, once the read ends, the time the
-     *                                                    binary search took (ms), the bytes scanned
-     *                                                    after it, the rows yielded and the file size
+     * @param (callable(float,int,int,int,bool):void)|null $report receives, once the read ends, the time
+     *                                                         the binary search took (ms), the bytes
+     *                                                         scanned after it, the rows yielded, the
+     *                                                         file size, and whether $maxBytes cut
+     *                                                         the read short
      *
      * @return \Generator<int,Row>
      */
@@ -197,6 +210,7 @@ final class PlainLogReader
             $start = $seeker->offsetFor($handle, $size, $fromMs);
             $seekMs = (hrtime(true) - $seekStarted) / 1e6;
             $yielded = 0;
+            $capped = false;
 
             if (-1 === fseek($handle, $start)) {
                 return;
@@ -240,16 +254,237 @@ final class PlainLogReader
 
                 $budget -= \strlen($row['message']) + 64;
                 if ($budget <= 0) {
+                    $capped = true;
+
                     return;
                 }
             }
         } finally {
             if (null !== $report && isset($seekMs, $start)) {
                 $end = ftell($handle);
-                $report($seekMs, max(0, (false === $end ? $start : $end) - $start), $yielded ?? 0, $size ?? 0);
+                $report($seekMs, max(0, (false === $end ? $start : $end) - $start), $yielded ?? 0, $size ?? 0, $capped ?? false);
             }
             fclose($handle);
         }
+    }
+
+    /**
+     * The records of [$fromMs, $toMs] reduced to what a histogram counts — the fast path behind
+     * {@see \Aleblanc\LogUi\Core\Query\LogExplorer::histogram()} when no text search is active.
+     *
+     * Monolog lines are only read up to their level: no message/context/extra split, no context
+     * JSON. The full parse runs on every warning and above, on the first
+     * {@see PATTERN_EXACT_RECORDS} info/debug records, then on one in $patternEvery — enough for the
+     * patterns panel, whose counts are weighted accordingly (`weight`). Other formats (JSON, nginx, telemetry…) are parsed in full as usual.
+     *
+     * With $fraction < 1 only that share of the file is read: evenly spread blocks of
+     * {@see SAMPLE_BLOCK_BYTES}, read whole or skipped whole. The caller scales the counts back up.
+     *
+     * Continuation lines are not records and yield nothing; a record whose first line mentions one
+     * of $excluding is skipped.
+     *
+     * @param list<string>                                     $excluding
+     * @param (callable(float,int,int,int,bool):void)|null     $report    as for {@see readRange()}
+     *
+     * @return \Generator<int,Tick>
+     */
+    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null): \Generator
+    {
+        if (!is_file($path) || $fromMs > $toMs) {
+            return;
+        }
+
+        $handle = fopen($path, 'rb');
+        if (false === $handle) {
+            return;
+        }
+
+        $read = 0;
+        $yielded = 0;
+        $seekMs = 0.0;
+        $size = 0;
+
+        try {
+            $size = fstat($handle)['size'] ?? 0;
+            $anchor = $this->anchorFor($path);
+
+            $seekStarted = hrtime(true);
+            $start = (new LogSeeker(fn (string $line): ?int => $this->lineTimestamp($line, $anchor)))->offsetFor($handle, $size, $fromMs);
+            $seekMs = (hrtime(true) - $seekStarted) / 1e6;
+
+            $beyond = 0;
+            $inRange = false;
+            $sampled = 0;
+            // Levels whose records are always parsed in full: rare, and the ones worth naming.
+            $loud = [];
+            foreach (LogLevel::all() as $name) {
+                if (LogLevel::severity($name) >= LogLevel::severity('warning')) {
+                    $loud[strtoupper($name)] = true;
+                }
+            }
+            $sentinel = TelemetryReader::SENTINEL;
+            $sentinelLength = \strlen($sentinel);
+            // Reading the whole rest of the file needs no position check per line.
+            $bounded = $fraction < 1.0;
+
+            foreach ($this->segments($start, $size, $fraction) as [$segStart, $segEnd]) {
+                if (!$this->seekLineAt($handle, $segStart)) {
+                    break;
+                }
+                $allowContinuation = false;
+
+                while (true) {
+                    if ($bounded) {
+                        $lineStart = ftell($handle);
+                        if (false === $lineStart || $lineStart >= $segEnd) {
+                            break;
+                        }
+                    }
+                    $raw = fgets($handle);
+                    if (false === $raw) {
+                        break;
+                    }
+                    $read += \strlen($raw);
+
+                    $line = rtrim($raw, "\r\n");
+                    if (str_contains($line, "\e")) {
+                        $line = preg_replace('/\e\[[0-9;]*m/', '', $line) ?? $line;
+                    }
+                    if ('' === $line) {
+                        continue;
+                    }
+
+                    $tick = null;
+                    if ('[' === $line[0] && preg_match(self::MONOLOG_HEADER, $line, $m)
+                        && 0 !== substr_compare($line, $sentinel, \strlen($m[0]), $sentinelLength)) {
+                        $message = null;
+                        $weight = 1;
+                        if (isset($loud[$m[3]])) {
+                            $message = $this->classify($line)['row']['message'] ?? null;
+                        } elseif (++$sampled <= self::PATTERN_EXACT_RECORDS) {
+                            // A small file is counted exactly; sampling only starts past this many.
+                            $message = $this->classify($line)['row']['message'] ?? null;
+                        } elseif (0 === $sampled % $patternEvery) {
+                            $message = $this->classify($line)['row']['message'] ?? null;
+                            $weight = $patternEvery;
+                        }
+                        $level = strtolower($m[3]);
+                        $tick = ['ts' => $this->timestamps->parse($m[1]) ?? $this->timestampOf($m[1], $anchor), 'level' => $level, 'channel' => $m[2], 'type' => 'log', 'profile' => null, 'message' => $message, 'weight' => $weight];
+                        $allowContinuation = true;
+                    } elseif (null !== ($classified = $this->classify($line))) {
+                        $row = $this->stamp($classified['row'], $anchor);
+                        $tick = ['ts' => $row['ts'], 'level' => $row['level'], 'channel' => $row['channel'], 'type' => $row['type'], 'profile' => $row['profile'], 'message' => $row['message'], 'weight' => 1];
+                        $allowContinuation = $classified['monolog'];
+                    } elseif ($allowContinuation) {
+                        continue; // a stack-trace frame: part of the record above, not a record
+                    } else {
+                        $tick = ['ts' => null, 'level' => '', 'channel' => '', 'type' => 'log', 'profile' => null, 'message' => $line, 'weight' => 1];
+                    }
+
+                    $ts = $tick['ts'];
+                    if (null !== $ts) {
+                        if ($ts > $toMs) {
+                            if (++$beyond > self::OUT_OF_ORDER_TOLERANCE) {
+                                return;
+                            }
+                            continue;
+                        }
+                        $beyond = 0;
+                        if ($ts < $fromMs) {
+                            continue;
+                        }
+                        $inRange = true;
+                    } elseif (!$inRange) {
+                        continue; // a leading fragment left by the seek (see readRange())
+                    }
+
+                    foreach ($excluding as $needle) {
+                        if (str_contains($line, $needle)) {
+                            continue 2;
+                        }
+                    }
+
+                    ++$yielded;
+                    yield $tick;
+                }
+            }
+        } finally {
+            if (null !== $report) {
+                $report($seekMs, $read, $yielded, $size, false);
+            }
+            fclose($handle);
+        }
+    }
+
+    /**
+     * Byte ranges to read from $start: the whole rest of the file, or — sampling — every block whose
+     * turn comes up when $fraction of them are spread evenly.
+     *
+     * @return \Generator<int,array{int,int}>
+     */
+    private function segments(int $start, int $size, float $fraction): \Generator
+    {
+        if ($fraction >= 1.0) {
+            yield [$start, $size];
+
+            return;
+        }
+
+        $blocks = (int) ceil(($size - $start) / self::SAMPLE_BLOCK_BYTES);
+        for ($i = 0; $i < $blocks; ++$i) {
+            // Bresenham-style: block i is taken when the running share crosses an integer.
+            if ((int) floor(($i + 1) * $fraction) > (int) floor($i * $fraction)) {
+                $from = $start + $i * self::SAMPLE_BLOCK_BYTES;
+                yield [$from, min($size, $from + self::SAMPLE_BLOCK_BYTES)];
+            }
+        }
+    }
+
+    /**
+     * Positions the handle on the first line that *starts* at or after $offset. A line that began
+     * before $offset belongs to the previous segment, which read it whole.
+     *
+     * @param resource $handle
+     */
+    private function seekLineAt($handle, int $offset): bool
+    {
+        if (0 === $offset) {
+            return 0 === fseek($handle, 0);
+        }
+        if (-1 === fseek($handle, $offset - 1)) {
+            return false;
+        }
+        $prev = fgetc($handle);
+        if ("\n" !== $prev) {
+            fgets($handle);
+        }
+
+        return true;
+    }
+
+    /**
+     * The first timestamp of a file — enough to tell whether it lies wholly inside a window.
+     * Reads at most a few hundred records from the top.
+     */
+    public function firstTimestamp(string $path): ?int
+    {
+        $seen = 0;
+        foreach ($this->read($path) as $row) {
+            if (null !== $row['ts']) {
+                return $row['ts'];
+            }
+            if (++$seen >= 200) {
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    /** Epoch ms of a raw date string — {@see stamp()} without building a row. */
+    private function timestampOf(string $date, int $anchorMs): ?int
+    {
+        return $this->stamp(['date' => $date, 'ts' => null, 'ts_inferred' => false, 'file' => '', 'channel' => '', 'level' => '', 'message' => '', 'context' => null, 'extra' => null, 'type' => 'log', 'profile' => null, 'offset' => 0], $anchorMs)['ts'];
     }
 
     /**
@@ -330,8 +565,11 @@ final class PlainLogReader
             $offset = false === $lineStart ? 0 : $lineStart;
 
             $line = rtrim($raw, "\r\n");
-            // Strip ANSI colour escapes (captured console output is full of them).
-            $line = preg_replace('/\e\[[0-9;]*m/', '', $line) ?? $line;
+            // Strip ANSI colour escapes (captured console output is full of them) — only when
+            // there is one: the check is a memchr, the regex is not.
+            if (str_contains($line, "\e")) {
+                $line = preg_replace('/\e\[[0-9;]*m/', '', $line) ?? $line;
+            }
             if ('' === $line) {
                 continue;
             }
@@ -519,8 +757,11 @@ final class PlainLogReader
     private function classifyJson(string $line): ?array
     {
         $data = json_decode($line, true);
-        if (!\is_array($data) || !isset($data['message'], $data['channel'])) {
+        if (!\is_array($data)) {
             return null;
+        }
+        if (!isset($data['message'], $data['channel'])) {
+            return $this->classifyJsonEvent($data, $line);
         }
 
         $level = $this->jsonLevel($data);
@@ -538,6 +779,49 @@ final class PlainLogReader
             'message' => \is_string($data['message']) ? $data['message'] : (string) json_encode($data['message']),
             'context' => $this->encodePart($data['context'] ?? null),
             'extra' => $this->encodePart($data['extra'] ?? null),
+            'type' => 'log',
+            'profile' => null,
+            'offset' => 0,
+        ]];
+    }
+
+    /**
+     * Any other JSON line that carries a date (`ts`, `time`, `datetime`, `@timestamp`…): an
+     * application's own event log, such as `{"ts":1730000000,"source":"eth0","rx":123}`.
+     *
+     * Kept whole as the message so search and `| json` still see every field, but dated — so it
+     * lands on the histogram and the binary search can find its way through the file. Lines with
+     * no date stay raw: nothing would place them in time.
+     *
+     * @param array<array-key,mixed> $data
+     *
+     * @return array{monolog:bool,row:Row}|null
+     */
+    private function classifyJsonEvent(array $data, string $line): ?array
+    {
+        $date = $this->jsonDate($data);
+        if ('' === $date) {
+            return null;
+        }
+
+        $channel = '';
+        foreach (['channel', 'source', 'logger', 'name'] as $key) {
+            if (isset($data[$key]) && \is_string($data[$key])) {
+                $channel = $data[$key];
+                break;
+            }
+        }
+
+        return ['monolog' => false, 'row' => [
+            'date' => $date,
+            'ts' => null,
+            'ts_inferred' => false,
+            'file' => '',
+            'channel' => $channel,
+            'level' => $this->jsonLevel($data) ?? 'info',
+            'message' => isset($data['message']) && \is_string($data['message']) ? $data['message'] : $line,
+            'context' => null,
+            'extra' => null,
             'type' => 'log',
             'profile' => null,
             'offset' => 0,
@@ -569,19 +853,37 @@ final class PlainLogReader
 
     /**
      * Resolve the timestamp across variants: datetime (JsonFormatter), @timestamp (Logstash),
-     * time (GoogleCloudLogging).
+     * time (GoogleCloudLogging), timestamp / ts (application event logs; numeric epochs accepted).
      *
      * @param array<array-key,mixed> $data
      */
     private function jsonDate(array $data): string
     {
-        foreach (['datetime', '@timestamp', 'time'] as $key) {
-            if (isset($data[$key]) && \is_string($data[$key])) {
-                return $data[$key];
+        foreach (['datetime', '@timestamp', 'time', 'timestamp', 'ts'] as $key) {
+            if (!isset($data[$key])) {
+                continue;
+            }
+            $value = $data[$key];
+            if (\is_string($value) && !is_numeric($value)) {
+                return $value;
+            }
+            if (is_numeric($value) && (float) $value > 0) {
+                return self::epochToIso((float) $value);
             }
         }
 
         return '';
+    }
+
+    /**
+     * A numeric epoch as an ISO stamp the timestamp parser reads: seconds (with an optional
+     * fraction), or milliseconds when the number is too large to be seconds (past year 5138).
+     */
+    private static function epochToIso(float $epoch): string
+    {
+        $ms = $epoch >= 1e11 ? (int) $epoch : (int) round($epoch * 1000);
+
+        return gmdate('Y-m-d\TH:i:s', intdiv($ms, 1000)).sprintf('.%03dZ', $ms % 1000);
     }
 
     /** Re-encode a JsonFormatter sub-object (context/extra) to a compact string, or null when empty. */

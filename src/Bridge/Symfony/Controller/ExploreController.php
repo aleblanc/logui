@@ -137,17 +137,29 @@ final class ExploreController
 
         try {
             $sources = $timings->measure('sources', fn (): array => $this->resolveSources($request));
+            $selection = $this->selection($request);
             $result = $this->explorer->histogram(
                 $sources,
                 $request->query->getString('q'),
                 $from,
                 $to,
-                $this->selection($request),
+                $selection,
                 max(1, min(500, $request->query->getInt('top', 20))),
                 $timings,
             );
         } catch (SyntaxError $e) {
             return $this->syntaxError($e);
+        }
+
+        $warmable = $result['warmable'];
+        unset($result['warmable']);
+        if ($warmable) {
+            // The answer had to sample rotated files: count them in full once the response is out
+            // (PHP-FPM sends it before shutdown functions run), so the next load is exact.
+            register_shutdown_function(function () use ($sources, $from, $to, $selection): void {
+                ignore_user_abort(true);
+                $this->explorer->warmHistogram($sources, $from, $to, $selection);
+            });
         }
 
         return $this->timed($timings, $result);

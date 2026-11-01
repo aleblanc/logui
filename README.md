@@ -131,6 +131,7 @@ log_ui:
     telemetry_max_files: 0             # with rotation on, how many dated files to keep (0 = all)
     slow_query_ms: 50                  # SQL slower than this is flagged
     query_budget_seconds: 5.0          # wall-clock ceiling for one explorer query (see below)
+    histogram_cache: true              # cache the histogram counts of rotated files in %kernel.cache_dir%/logui
     max_records_per_profile: 1000      # cap on records captured per request (bounds line size)
     ui_path: /_logui
     access: password                   # password (default) | delegate
@@ -266,6 +267,28 @@ part must parse back to the exact format LogUI writes, so `logui-backup.log`,
 Rotation is `none` by default, and you should **leave it that way while `telemetry_file` is your
 application's own log** (`prod.log`, `dev.log`): rotating that file is logrotate's job, not a
 library's.
+
+### Long ranges: header counting, cache, sampling
+
+With no text search (no search term, no LogQL, no picked pattern) — the default view — the
+histogram does not parse whole lines: it reads each Monolog line up to its level, and parses in
+full only warnings and above plus a sample of the rest for the patterns panel. Files are then
+handled one by one, newest first:
+
+- **Cache** — a file that lies wholly inside the window and has not been written for ten minutes
+  (yesterday's `dev-2026-10-31.log`) is counted once and kept under `%kernel.cache_dir%/logui`
+  (`histogram_cache: false` turns it off). Its key includes the file's size and mtime, so an entry
+  is never stale. Today's file is always read.
+- **Sampling** — when what is left will not fit in the budget at the throughput measured so far,
+  only an evenly spread share of each file is read and the counts are scaled up. The chart and
+  KPIs then read `≈`, and the footer says which share was read.
+- **Warm-up** — when rotated files had to be sampled, they are counted in full right after the
+  response is sent (PHP-FPM), one warm-up at a time. The next load of the same view is exact and
+  comes from the cache.
+
+On a Raspberry Pi 4 with an SD card, 7 days × 100 000 lines (155 MB): 4.6 s for the first load,
+sampled at 7 % (count off by 4 %); ~19 s of warm-up in the background; then a few milliseconds,
+exact. A search term still reads every line — see below.
 
 ### "Partial result" in the explorer
 

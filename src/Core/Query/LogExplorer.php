@@ -35,8 +35,36 @@ final class LogExplorer
      */
     public const DEFAULT_BUDGET_SECONDS = 5.0;
 
+    /**
+     * Per-file byte cap for the explorer's reads.
+     *
+     * The wall-clock budget is what bounds the work here; the reader's default cap (8 MB, a
+     * safety net for callers without a deadline) would silently cut a single day of a busy log
+     * — an 18 MB `dev.log` came back with two thirds of its lines and no `truncated` flag.
+     */
+    private const RANGE_BYTES = 1 << 30;
+
     /** How often the deadline is checked — reading the clock per row would itself be a cost. */
     private const BUDGET_CHECK_EVERY = 256;
+
+    /**
+     * Throughput assumed before a request has measured its own (header-only counting on a
+     * Raspberry Pi with an SD card); deliberately on the low side, so the first guess samples a
+     * little more than needed rather than running out of budget.
+     */
+    private const ASSUMED_BYTES_PER_SECOND = 8_000_000;
+
+    /** Kept back from the budget for merging, aggregating and encoding the answer. */
+    private const BUDGET_MARGIN_SECONDS = 0.5;
+
+    /** Never read less than this share of a file: below it, the bars are mostly noise. */
+    private const MIN_SAMPLE = 0.02;
+
+    /** One info/debug record in this many is parsed in full for the patterns panel. */
+    private const PATTERN_EVERY = 8;
+
+    /** A file untouched for this long is no longer being written: its count can be cached. */
+    private const QUIET_MS = 600_000;
 
     /** Target number of histogram bars — the bucket width is derived from the window. */
     private const TARGET_BUCKETS = 60;
@@ -53,6 +81,7 @@ final class LogExplorer
         private readonly MergedLogReader $merged,
         private readonly Parser $parser = new Parser(),
         private readonly float $budgetSeconds = self::DEFAULT_BUDGET_SECONDS,
+        private readonly ?HistogramCache $cache = null,
     ) {
     }
 
@@ -128,9 +157,17 @@ final class LogExplorer
      * Requests and commands are rows like the others, and they also feed a small set of request
      * statistics (count, failures, p50/p95 duration, SQL) computed on what passed every filter.
      *
+     * Two ways to get there:
+     *  - **No text search** (no LogQL, no search term, no picked pattern) — the default view, and
+     *    the one that spans days. Files are counted one by one from their line headers
+     *    ({@see histogramByFile()}): rotated files come from the cache, and when what is left
+     *    cannot be read within the budget, files are sampled and the counts extrapolated
+     *    (`sampled` says which share was read).
+     *  - **Text search** — every line is parsed and matched, across the merged sources.
+     *
      * @param array<string,string> $sources
      *
-     * @return array{buckets:list<array{ts:int,count:int,levels:array<string,int>,requests:int,latency:array{n:int,p50:float,p95:float}|null}>,facets:array{type:array<string,int>,level:array<string,int>,channel:array<string,int>,file:array<string,int>},patterns:list<array{pattern:string,count:int,sample:string,level:string}>,profiles:array{count:int,failed:int,p50:float,p95:float,sql:int},interval:int,from:int,to:int,total:int,matched:int,truncated:bool,tookMs:float}
+     * @return array{buckets:list<array{ts:int,count:int,levels:array<string,int>,requests:int,latency:array{n:int,p50:float,p95:float}|null}>,facets:array{type:array<string,int>,level:array<string,int>,channel:array<string,int>,file:array<string,int>},patterns:list<array{pattern:string,count:int,sample:string,level:string}>,profiles:array{count:int,failed:int,p50:float,p95:float,sql:int},interval:int,from:int,to:int,total:int,matched:int,truncated:bool,sampled:float|null,warmable:bool,tookMs:float}
      */
     public function histogram(array $sources, string $logql, int $fromMs, int $toMs, ?Selection $selection = null, int $top = 20, ?Timings $timings = null): array
     {
@@ -139,31 +176,128 @@ final class LogExplorer
         $evaluator = $timings->measure('parse', fn (): Evaluator => new Evaluator($this->parser->parse($logql)));
         $selection ??= new Selection();
         $interval = $this->bucketWidth($fromMs, $toMs);
-
-        /** @var array<int,array{ts:int,count:int,levels:array<string,int>,requests:int,latency:array{n:int,p50:float,p95:float}|null}> $buckets */
-        $buckets = [];
-        /** @var array<int,list<float>> $perBucket request durations per slot, turned into percentiles after ksort */
-        $perBucket = [];
-        /** @var array{type:array<string,int>,level:array<string,int>,channel:array<string,int>,file:array<string,int>} $facets */
-        $facets = ['type' => [], 'level' => [], 'channel' => [], 'file' => []];
-        $total = 0;
-        $matched = 0;
-        $seen = 0;
-        $truncated = false;
         $deadline = $started + $this->budgetSeconds;
-
-        /** @var list<float> $durations */
-        $durations = [];
-        $failed = 0;
-        $sql = 0;
-        $patterns = new Patterns();
+        $tally = new HistogramTally($interval);
+        $sampled = null;
+        $warmable = false;
 
         $scanStarted = microtime(true);
+        if ('' === trim($logql) && !$selection->needsText()) {
+            [$truncated, $sampled, $warmable] = $this->histogramByFile($tally, $sources, $fromMs, $toMs, $selection, $timings, $deadline);
+        } else {
+            $truncated = $this->histogramByRow($tally, $evaluator, $sources, $fromMs, $toMs, $selection, $timings, $deadline);
+        }
+        $this->closeScan($timings, $scanStarted);
+
+        $aggregateStarted = microtime(true);
+        $result = $tally->result($top);
+        $timings->add('aggregate', (microtime(true) - $aggregateStarted) * 1000);
+
+        return $result + [
+            'interval' => $interval,
+            'from' => $fromMs,
+            'to' => $toMs,
+            'truncated' => $truncated || $timings->wasBudgetHit(),
+            'sampled' => $sampled,
+            'warmable' => $warmable,
+            'tookMs' => round((microtime(true) - $started) * 1000, 1),
+        ];
+    }
+
+    /**
+     * Reads in full, and caches, every file of the window that {@see histogram()} could have
+     * answered from the cache but had to sample or skip. Meant to run once the response has been
+     * sent: the next load of the same view is then exact, and fast.
+     *
+     * Only one warm-up runs at a time (a second one returns at once), and it stops after
+     * $maxSeconds — whatever it stored by then is kept.
+     *
+     * @param array<string,string> $sources
+     *
+     * @return int files stored
+     */
+    public function warmHistogram(array $sources, int $fromMs, int $toMs, ?Selection $selection = null, float $maxSeconds = 120.0): int
+    {
+        if (null === $this->cache) {
+            return 0;
+        }
+        $lock = $this->cache->lock();
+        if (null === $lock) {
+            return 0;
+        }
+
+        $selection ??= new Selection();
+        $interval = $this->bucketWidth($fromMs, $toMs);
+        $deadline = microtime(true) + $maxSeconds;
+        $stored = 0;
+
+        try {
+            foreach ($this->merged->sourcesSince($sources, $fromMs) as $ref => $path) {
+                $ref = (string) $ref;
+                if (microtime(true) > $deadline) {
+                    break;
+                }
+                clearstatcache(true, $path);
+                $stat = ['size' => (int) @filesize($path), 'mtime' => (int) @filemtime($path)];
+                $key = $this->cacheKey($ref, $path, $stat, $fromMs, $toMs, $interval, $selection);
+                if (null === $key || null !== $this->cache->get($key)) {
+                    continue;
+                }
+
+                $tally = new HistogramTally($interval);
+                if ($this->tallyFile($tally, $ref, $path, $fromMs, $toMs, 1.0, $selection, $deadline)) {
+                    continue; // cut short by the deadline: not a complete count, not stored
+                }
+                $this->cache->put($key, $tally);
+                ++$stored;
+            }
+        } finally {
+            $this->cache->unlock($lock);
+        }
+
+        return $stored;
+    }
+
+    /**
+     * Counts one file into $tally from its line headers.
+     *
+     * @return bool whether the deadline cut the count short
+     */
+    private function tallyFile(HistogramTally $tally, string $ref, string $path, int $fromMs, int $toMs, float $fraction, Selection $selection, float $deadline, ?callable $report = null): bool
+    {
+        $seen = 0;
+        foreach ($this->merged->scanRange($path, $fromMs, $toMs, $fraction, self::PATTERN_EVERY, $selection->excluding(), $report) as $tick) {
+            if (0 === ++$seen % self::BUDGET_CHECK_EVERY && microtime(true) > $deadline) {
+                return true;
+            }
+            $level = '' !== $tick['level'] ? $tick['level'] : 'other';
+            $tally->facet($tick['type'], $level, $tick['channel'], $ref);
+            if (!$selection->matchesFacetValues($tick['type'], $level, $tick['channel'])) {
+                continue;
+            }
+            if (null !== $tick['message']) {
+                $tally->pattern($tick['message'], $level, $tick['weight']);
+            }
+            $tally->record($tick['ts'], $level, $tick['profile']);
+        }
+
+        return false;
+    }
+
+    /**
+     * The full path: every record parsed, merged across files, matched against the query.
+     *
+     * @param array<string,string> $sources
+     *
+     * @return bool whether the budget cut the count short
+     */
+    private function histogramByRow(HistogramTally $tally, Evaluator $evaluator, array $sources, int $fromMs, int $toMs, Selection $selection, Timings $timings, float $deadline): bool
+    {
+        $seen = 0;
         foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs, $timings, $deadline)) as $row) {
             if (0 === ++$seen % self::BUDGET_CHECK_EVERY && microtime(true) > $deadline) {
                 // Counting stops here; the chart shows what was measured and says so.
-                $truncated = true;
-                break;
+                return true;
             }
 
             if (!$selection->matchesSearch($row)) {
@@ -171,14 +305,7 @@ final class LogExplorer
             }
 
             $level = '' !== $row['level'] ? strtolower($row['level']) : 'other';
-
-            ++$matched;
-            $facets['type'][$row['type']] = ($facets['type'][$row['type']] ?? 0) + 1;
-            $facets['level'][$level] = ($facets['level'][$level] ?? 0) + 1;
-            if ('' !== $row['channel']) {
-                $facets['channel'][$row['channel']] = ($facets['channel'][$row['channel']] ?? 0) + 1;
-            }
-            $facets['file'][$row['file']] = ($facets['file'][$row['file']] ?? 0) + 1;
+            $tally->facet($row['type'], $level, $row['channel'], $row['file']);
 
             if (!$selection->matchesFacets($row)) {
                 continue;
@@ -186,83 +313,143 @@ final class LogExplorer
 
             // Counted on everything the facets kept, before the pattern narrows — same reason the
             // facet counts are taken before the facet selection: picking one must not erase the rest.
-            $patterns->add($row['message'], $level);
+            $tally->pattern($row['message'], $level);
             if (!$selection->matchesPattern($row)) {
                 continue;
             }
 
-            $profile = $row['profile'];
-            if (null !== $profile) {
-                $durations[] = (float) $profile['duration_ms'];
-                $sql += (int) $profile['sql'];
-                if ($profile['failed']) {
-                    ++$failed;
-                }
-            }
-
-            $ts = $row['ts'];
-            if (null === $ts) {
-                continue; // undatable lines cannot be placed on a time axis
-            }
-
-            $slot = intdiv($ts - $fromMs, $interval) * $interval + $fromMs;
-
-            if (!isset($buckets[$slot])) {
-                $buckets[$slot] = ['ts' => $slot, 'count' => 0, 'levels' => [], 'requests' => 0, 'latency' => null];
-            }
-            ++$buckets[$slot]['count'];
-            $buckets[$slot]['levels'][$level] = ($buckets[$slot]['levels'][$level] ?? 0) + 1;
-            if (null !== $profile) {
-                ++$buckets[$slot]['requests'];
-                $perBucket[$slot][] = (float) $profile['duration_ms'];
-            }
-            ++$total;
+            $tally->record($row['ts'], $level, $row['profile']);
         }
-        $this->closeScan($timings, $scanStarted);
-        $truncated = $truncated || $timings->wasBudgetHit();
-        $aggregateStarted = microtime(true);
 
-        ksort($buckets);
-        foreach ($buckets as $slot => $_bucket) {
-            if (!isset($perBucket[$slot])) {
+        return false;
+    }
+
+    /**
+     * The fast path: each file counted on its own from line headers, newest first.
+     *
+     * 1. Files wholly inside the window that have gone quiet are answered from the cache.
+     * 2. The rest are read; when their size will not fit in what remains of the budget at the rate
+     *    observed so far, only a share of each is read and its counts are scaled up.
+     * 3. A file read in full and wholly inside the window is stored for next time.
+     *
+     * @param array<string,string> $sources
+     *
+     * @return array{bool,float|null,bool} [truncated, smallest share read (null when everything
+     *                                     was), whether a warm-up would make the next load exact]
+     */
+    private function histogramByFile(HistogramTally $tally, array $sources, int $fromMs, int $toMs, Selection $selection, Timings $timings, float $deadline): array
+    {
+        $open = $this->merged->sourcesSince($sources, $fromMs);
+        $timings->files(\count($sources), \count($open));
+
+        // Newest first: if the budget runs out, what is missing is the oldest part of the window.
+        $stats = [];
+        foreach ($open as $ref => $path) {
+            clearstatcache(true, $path);
+            $stats[$ref] = ['size' => (int) @filesize($path), 'mtime' => (int) @filemtime($path)];
+        }
+        uksort($stats, static fn (string|int $a, string|int $b): int => $stats[$b]['mtime'] <=> $stats[$a]['mtime']);
+
+        // 1. Cache.
+        $toRead = [];
+        $openStarted = hrtime(true);
+        foreach ($stats as $ref => $stat) {
+            $ref = (string) $ref;
+            $key = $this->cacheKey($ref, $open[$ref], $stat, $fromMs, $toMs, $tally->interval(), $selection);
+            $cached = null === $key ? null : $this->cache?->get($key);
+            if (null !== $cached) {
+                $tally->merge($cached);
+                $timings->cached();
                 continue;
             }
-            $slotDurations = $perBucket[$slot];
-            sort($slotDurations);
-            $buckets[$slot]['latency'] = [
-                'n' => \count($slotDurations),
-                'p50' => self::percentile($slotDurations, 0.5),
-                'p95' => self::percentile($slotDurations, 0.95),
-            ];
+            $toRead[$ref] = $key;
         }
-        foreach ($facets as &$counts) {
-            arsort($counts);
+        $timings->add('cache', (hrtime(true) - $openStarted) / 1e6);
+
+        // 2. Read what is left, sampling when it cannot all be read in time.
+        $remaining = 0;
+        foreach (array_keys($toRead) as $ref) {
+            $remaining += $stats[(string) $ref]['size'];
         }
-        unset($counts);
+        $readBytes = 0;
+        $readSeconds = 0.0;
+        $smallest = 1.0;
+        // A cacheable file left sampled or unread is what a warm-up after the response can fix.
+        $warmable = false;
 
-        sort($durations);
-        $topPatterns = $patterns->top($top);
-        $timings->add('aggregate', (microtime(true) - $aggregateStarted) * 1000);
+        foreach ($toRead as $ref => $key) {
+            $ref = (string) $ref;
+            $now = microtime(true);
+            if ($now > $deadline) {
+                $timings->budgetHit();
 
-        return [
-            'buckets' => array_values($buckets),
-            'facets' => $facets,
-            'patterns' => $topPatterns,
-            'profiles' => [
-                'count' => \count($durations),
-                'failed' => $failed,
-                'p50' => self::percentile($durations, 0.5),
-                'p95' => self::percentile($durations, 0.95),
-                'sql' => $sql,
-            ],
+                return [true, $smallest < 1.0 ? $smallest : null, true];
+            }
+
+            // Throughput measured on this request once it has read enough to mean something.
+            $rate = $readBytes >= 1_000_000 && $readSeconds > 0 ? $readBytes / $readSeconds : self::ASSUMED_BYTES_PER_SECOND;
+            $affordable = $rate * max(0.0, $deadline - $now - self::BUDGET_MARGIN_SECONDS);
+            $fraction = $remaining > 0 ? max(self::MIN_SAMPLE, min(1.0, $affordable / $remaining)) : 1.0;
+            $smallest = min($smallest, $fraction);
+
+            $partial = new HistogramTally($tally->interval());
+            $bytes = 0;
+            $report = static function (float $seekMs, int $read, int $rows, int $size) use ($timings, $ref, &$bytes): void {
+                $bytes = $read;
+                $timings->fileRead($ref, $seekMs, $read, $rows, $size);
+            };
+
+            $fileStarted = microtime(true);
+            $cut = $this->tallyFile($partial, $ref, $open[$ref], $fromMs, $toMs, $fraction, $selection, $deadline, $report);
+            $elapsed = microtime(true) - $fileStarted;
+            $timings->fileTime($ref, $elapsed * 1000);
+            $readBytes += $bytes;
+            $readSeconds += $elapsed;
+            $remaining -= $stats[$ref]['size'];
+
+            // 3. A complete, exact count of a file wholly inside the window is worth keeping.
+            if (!$cut && $fraction >= 1.0 && null !== $key) {
+                $this->cache?->put($key, $partial);
+            } elseif (null !== $key) {
+                $warmable = true;
+            }
+            $tally->merge($partial, 1.0 / $fraction);
+
+            if ($cut) {
+                $timings->budgetHit();
+
+                return [true, $smallest < 1.0 ? $smallest : null, true];
+            }
+        }
+
+        return [false, $smallest < 1.0 ? $smallest : null, $warmable];
+    }
+
+    /**
+     * Cache key of one file's tally, or null when the file must be read: no cache, still being
+     * written, or reaching outside the window (its count then depends on where the window falls).
+     *
+     * @param array{size:int,mtime:int} $stat
+     */
+    private function cacheKey(string $ref, string $path, array $stat, int $fromMs, int $toMs, int $interval, Selection $selection): ?string
+    {
+        if (null === $this->cache || 0 === $stat['size']) {
+            return null;
+        }
+        $mtimeMs = $stat['mtime'] * 1000;
+        if ($mtimeMs > $toMs || $mtimeMs > (int) (microtime(true) * 1000) - self::QUIET_MS) {
+            return null;
+        }
+        $first = $this->merged->firstTimestamp($path);
+        if (null === $first || $first < $fromMs) {
+            return null;
+        }
+
+        return $this->cache->key((string) (realpath($path) ?: $path), $stat['size'], $stat['mtime'], [
+            'ref' => $ref,
             'interval' => $interval,
-            'from' => $fromMs,
-            'to' => $toMs,
-            'total' => $total,
-            'matched' => $matched,
-            'truncated' => $truncated,
-            'tookMs' => round((microtime(true) - $started) * 1000, 1),
-        ];
+            'patternEvery' => self::PATTERN_EVERY,
+        ] + $selection->fingerprint());
     }
 
     /**
@@ -400,7 +587,7 @@ final class LogExplorer
      */
     private function read(array $sources, int $fromMs, int $toMs, ?Timings $timings = null, ?float $deadline = null): \Generator
     {
-        yield from $this->merged->readRange($sources, $fromMs, $toMs, PlainLogReader::DEFAULT_RANGE_BYTES, $timings, $deadline);
+        yield from $this->merged->readRange($sources, $fromMs, $toMs, self::RANGE_BYTES, $timings, $deadline);
     }
 
     /**

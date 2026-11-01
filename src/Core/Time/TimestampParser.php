@@ -46,6 +46,19 @@ final class TimestampParser
 
     private ?int $lastTs = null;
 
+    /**
+     * ISO stamps resolved to the second, keyed by the stamp without its fraction ("2026-10-13T12:34:56+02:00").
+     *
+     * Monolog writes microseconds, so two lines of the same second never share a raw stamp and the
+     * one-entry memo above misses; this one hits for every line but the first of each second.
+     *
+     * @var array<string,int|null>
+     */
+    private array $secondCache = [];
+
+    /** Bound on {@see $secondCache}: a day of logs is 86 400 seconds, far more than any one read needs. */
+    private const SECOND_CACHE_MAX = 4096;
+
     private readonly \DateTimeZone $timezone;
 
     /**
@@ -151,17 +164,6 @@ final class TimestampParser
             return null;
         }
 
-        $y = (int) substr($s, 0, 4);
-        $mo = (int) substr($s, 5, 2);
-        $d = (int) substr($s, 8, 2);
-        if (0 === $y || $mo < 1 || $mo > 12 || $d < 1 || $d > 31) {
-            return null;
-        }
-
-        $h = (int) substr($s, 11, 2);
-        $mi = (int) substr($s, 14, 2);
-        $sec = (int) substr($s, 17, 2);
-
         $pos = 19;
         $ms = 0;
         if ($pos < $len && '.' === $s[$pos]) {
@@ -176,9 +178,32 @@ final class TimestampParser
             $pos += $digits;
         }
 
-        $offset = $this->readOffset($s, $pos, $len) ?? $this->offsetFor($y, $mo, $d, $h, $mi, $sec);
+        // Everything but the fraction decides the second: resolve it once per second seen.
+        $key = $pos === 19 ? $s : substr($s, 0, 19).substr($s, $pos);
+        if (\array_key_exists($key, $this->secondCache)) {
+            $seconds = $this->secondCache[$key];
 
-        return $this->epoch($y, $mo, $d, $h, $mi, $sec, $offset) * 1000 + $ms;
+            return null === $seconds ? null : $seconds * 1000 + $ms;
+        }
+        if (\count($this->secondCache) >= self::SECOND_CACHE_MAX) {
+            $this->secondCache = [];
+        }
+
+        $y = (int) substr($s, 0, 4);
+        $mo = (int) substr($s, 5, 2);
+        $d = (int) substr($s, 8, 2);
+        if (0 === $y || $mo < 1 || $mo > 12 || $d < 1 || $d > 31) {
+            return $this->secondCache[$key] = null;
+        }
+
+        $h = (int) substr($s, 11, 2);
+        $mi = (int) substr($s, 14, 2);
+        $sec = (int) substr($s, 17, 2);
+
+        $offset = $this->readOffset($s, $pos, $len) ?? $this->offsetFor($y, $mo, $d, $h, $mi, $sec);
+        $seconds = $this->secondCache[$key] = $this->epoch($y, $mo, $d, $h, $mi, $sec, $offset);
+
+        return $seconds * 1000 + $ms;
     }
 
     /** `2026/10/13 12:34:56` (nginx error log — local time, no offset). */

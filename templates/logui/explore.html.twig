@@ -684,7 +684,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   // ---------------------------------------------------------------- timings (footer)
 
   var timingLines = {};
-  var STEP_LABELS = { boot: 'boot', auth: 'auth', sources: 'sources', parse: 'parse', open: 'open', scan: 'scan', aggregate: 'aggregate', encode: 'encode' };
+  var STEP_LABELS = { boot: 'boot', auth: 'auth', sources: 'sources', parse: 'parse', cache: 'cache', open: 'open', scan: 'scan', aggregate: 'aggregate', encode: 'encode' };
 
   /**
    * One footer line per endpoint: the round trip seen by the browser, then the server's own
@@ -715,11 +715,13 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       if (undefined === ms) return;
       server += ms;
       var text = STEP_LABELS[k] + ' ' + fmtMs(ms);
-      if ('open' === k) text += ' (' + steps.files_opened + '/' + steps.files_total + ' files)';
+      if ('open' === k || ('cache' === k && undefined === steps.open_ms)) text += ' (' + steps.files_opened + '/' + steps.files_total + ' files)';
+      if ('cache' === k) text += ', ' + (steps.files_cached || 0) + ' hit';
       part(text, ms >= 1000);
     });
     part('wait ' + fmtMs(Math.max(0, res.ms - server)), res.ms - server >= 1000);
     if (steps.budget_hit) part('budget reached — partial', true);
+    if (res.body.sampled) part('sampled ' + Math.max(1, Math.round(res.body.sampled * 100)) + '%', true);
 
     line.title = (t.files || []).map(function (f) {
       return f.file + '  ' + fmtMs(f.ms) + ' (seek ' + fmtMs(f.seekMs) + ', ' + (fmtBytes(f.bytes) || '0 B') +
@@ -786,7 +788,13 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         (res.body.patterns || []).forEach(function (p) { state.prevPatterns[p.pattern] = true; });
         // Align each previous bucket onto the current window's time axis for the tooltip lookup.
         state.prevByTs = {};
-        state.prevBuckets.forEach(function (b) { state.prevByTs[b.ts + span] = b.count; });
+        // Slots are clock-aligned, so a shifted previous slot lands between two current ones when
+        // the span is not a whole number of buckets: file it under the nearest current slot.
+        var step = state.interval || res.body.interval;
+        state.prevBuckets.forEach(function (b) {
+          var at = Math.round((b.ts + span) / step) * step;
+          state.prevByTs[at] = (state.prevByTs[at] || 0) + b.count;
+        });
         draw();
         renderKpis(primary);
         renderFacets();
@@ -820,6 +828,9 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     warnings = h.facets.level.warning || 0;
 
     var recordsNote = h.truncated ? 'budget reached — partial' : fmtSpan(h.interval) + ' buckets';
+    // Sampled: counts were extrapolated from a share of the lines. Say so wherever a count shows.
+    var approx = h.sampled ? '≈ ' : '';
+    if (h.sampled) recordsNote = '≈ estimated from ' + Math.max(1, Math.round(h.sampled * 100)) + '% of the lines';
     if (state.compare && state.prevPatterns) {
       var delta = h.total - state.prevTotal;
       var sign = delta > 0 ? '+' : '';
@@ -828,9 +839,9 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     }
 
     var cards = [
-      { label: 'Records', value: h.total.toLocaleString(), note: recordsNote },
-      { label: 'Errors', value: errors.toLocaleString(), note: pct(errors, h.matched), tint: colourOf('error') },
-      { label: 'Warnings', value: warnings.toLocaleString(), note: pct(warnings, h.matched), tint: colourOf('warning') },
+      { label: 'Records', value: approx + h.total.toLocaleString(), note: recordsNote },
+      { label: 'Errors', value: approx + errors.toLocaleString(), note: pct(errors, h.matched), tint: colourOf('error') },
+      { label: 'Warnings', value: approx + warnings.toLocaleString(), note: pct(warnings, h.matched), tint: colourOf('warning') },
       { label: 'Rate', value: (h.total / minutes).toFixed(h.total / minutes < 10 ? 1 : 0), note: 'records / min' },
       { label: 'Query', value: h.tookMs + ' ms', note: Object.keys(h.facets.file).length + ' file(s) scanned' }
     ];
@@ -1635,7 +1646,11 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
     var width = Math.max(1, (o.interval / o.span) * W - 1.2);
 
     buckets.forEach(function (bucket) {
+      // Buckets are aligned to the clock, not to the window: the first one can start before it.
+      // Clip it to the chart rather than letting it hang off the left edge.
       var x = ((bucket.ts - o.from) / o.span) * W;
+      var barWidth = width;
+      if (x < 0) { barWidth = Math.max(1, width + x); x = 0; }
       var y = floor;
 
       // Stacked least-severe first, so errors sit on top and stay visible. Only the last
@@ -1646,15 +1661,15 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
         y -= h;
         var rect = svgEl('rect', {
           x: x.toFixed(2), y: y.toFixed(2),
-          width: width.toFixed(2), height: Math.max(0.6, h).toFixed(2),
+          width: barWidth.toFixed(2), height: Math.max(0.6, h).toFixed(2),
           fill: 'url(#' + targetSvg.id + '-g-' + level + ')',
-          rx: i === present.length - 1 ? Math.min(2, width / 2).toFixed(2) : 0
+          rx: i === present.length - 1 ? Math.min(2, barWidth / 2).toFixed(2) : 0
         });
         rect.setAttribute('class', 'ex-bar');
         targetSvg.appendChild(rect);
       });
 
-      var hit = svgEl('rect', { x: x.toFixed(2), y: 0, width: width.toFixed(2), height: o.height, fill: 'transparent' });
+      var hit = svgEl('rect', { x: x.toFixed(2), y: 0, width: barWidth.toFixed(2), height: o.height, fill: 'transparent' });
       hit.addEventListener('mousemove', function (e) { showTip(targetSvg, tipEl, e, bucket, o.variation); });
       hit.addEventListener('mouseleave', function () { tipEl.hidden = true; });
       if (o.withZoom) hit.addEventListener('click', function () { zoomTo(bucket.ts, bucket.ts + o.interval); });

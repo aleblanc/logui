@@ -229,6 +229,27 @@ final class PlainLogReaderTest extends TestCase
         self::assertSame('{"foo":"bar","baz":1}', $rows[0]['message']);
     }
 
+    public function test_dated_json_event_lines_are_dated_records(): void
+    {
+        // An application event log: no message/channel, but a date — seconds, milliseconds or ISO.
+        file_put_contents($this->file, implode("\n", [
+            '{"ts":1780000000,"source":"eth0","rx":123}',
+            '{"ts":1780000000123,"source":"eth1"}',
+            '{"timestamp":"2026-06-01T00:00:00+00:00","level":"warning","what":"x"}',
+        ])."\n");
+
+        $rows = iterator_to_array((new PlainLogReader())->read($this->file), false);
+
+        self::assertCount(3, $rows);
+        self::assertSame(1780000000000, $rows[0]['ts']);
+        self::assertSame('eth0', $rows[0]['channel']);
+        self::assertSame('info', $rows[0]['level']);
+        self::assertSame('{"ts":1780000000,"source":"eth0","rx":123}', $rows[0]['message'], 'the whole line stays searchable');
+        self::assertSame(1780000000123, $rows[1]['ts']);
+        self::assertSame(strtotime('2026-06-01T00:00:00+00:00') * 1000, $rows[2]['ts']);
+        self::assertSame('warning', $rows[2]['level']);
+    }
+
     public function test_strips_ansi_colour_escapes(): void
     {
         file_put_contents(

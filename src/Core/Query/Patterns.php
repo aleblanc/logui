@@ -31,8 +31,19 @@ final class Patterns
         '/\b\d+(?:\.\d+)?\b/' => '<n>',
     ];
 
+    /** Bound on the message → pattern memo. */
+    private const MEMO_MAX = 10_000;
+
     /** @var array<string,array{count:int,sample:string,level:string,rank:int}> */
     private array $seen = [];
+
+    /**
+     * Pattern of each message already normalised. Logs repeat themselves verbatim (a route matched,
+     * an event notified) and normalising runs six regexes: the second time is a hash lookup.
+     *
+     * @var array<string,string>
+     */
+    private array $memo = [];
 
     public static function normalize(string $message): string
     {
@@ -43,19 +54,63 @@ final class Patterns
         return trim(preg_replace('/\s+/', ' ', $line) ?? $line);
     }
 
-    public function add(string $message, string $level): void
+    /** @param int $weight how many records this one stands for — more than 1 when sampling */
+    public function add(string $message, string $level, int $weight = 1): void
     {
-        $key = self::normalize($message);
+        if (isset($this->memo[$message])) {
+            $key = $this->memo[$message];
+        } else {
+            if (\count($this->memo) >= self::MEMO_MAX) {
+                $this->memo = [];
+            }
+            $key = $this->memo[$message] = self::normalize($message);
+        }
+        $this->count($key, $weight, $message, $level);
+    }
+
+    /** Folds another counter into this one — the per-file counters of one histogram. */
+    public function merge(self $other, float $factor = 1.0): void
+    {
+        foreach ($other->seen as $key => $v) {
+            $this->count((string) $key, 1.0 === $factor ? $v['count'] : (int) round($v['count'] * $factor), $v['sample'], $v['level']);
+        }
+    }
+
+    /**
+     * The most frequent patterns, as plain data — what a cached histogram keeps.
+     *
+     * @return array<string,array{count:int,sample:string,level:string,rank:int}>
+     */
+    public function export(int $keep = 1000): array
+    {
+        $all = $this->seen;
+        uasort($all, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
+
+        return \array_slice($all, 0, $keep, true);
+    }
+
+    /** @param array<string,array{count:int,sample:string,level:string,rank:int}> $seen */
+    public static function import(array $seen): self
+    {
+        $patterns = new self();
+        $patterns->seen = $seen;
+
+        return $patterns;
+    }
+
+    private function count(string $key, int $weight, string $sample, string $level): void
+    {
         if (!isset($this->seen[$key])) {
             if (\count($this->seen) >= self::MAX_DISTINCT) {
                 $key = '<other>';
             }
-            $this->seen[$key] ??= ['count' => 0, 'sample' => $message, 'level' => $level, 'rank' => LogLevel::severity($level)];
+            $this->seen[$key] ??= ['count' => 0, 'sample' => $sample, 'level' => $level, 'rank' => LogLevel::severity($level)];
         }
-        ++$this->seen[$key]['count'];
-        if (LogLevel::severity($level) > $this->seen[$key]['rank']) {
+        $this->seen[$key]['count'] += $weight;
+        $rank = LogLevel::severity($level);
+        if ($rank > $this->seen[$key]['rank']) {
             $this->seen[$key]['level'] = $level;
-            $this->seen[$key]['rank'] = LogLevel::severity($level);
+            $this->seen[$key]['rank'] = $rank;
         }
     }
 

@@ -13,6 +13,31 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   handful.
 - The explorer's 5 s budget now also covers opening the files and rows the query filters out; it
   stops there and answers `truncated: true` instead of running past it.
+- **Silent truncation of large files**: the explorer read at most 8 MB of each file per window
+  (the reader's safety cap) without saying so — a busy day's `dev.log` was counted at two thirds and
+  answered `truncated: false`. The explorer now relies on its wall-clock budget (per-file cap raised
+  to 1 GB), and a read cut by the byte cap is reported as `truncated`.
+- JSON lines without `message`/`channel` but with a date (`ts`, `timestamp`, `time`, `datetime`,
+  `@timestamp`; ISO strings or numeric epochs in s/ms) are now dated records (channel from
+  `source`/`logger`/`name`, the whole line as message) instead of raw undatable text — they show on
+  the histogram and the binary search works on them.
+
+### Performance
+- **Histogram without text search counts from line headers**, file by file: Monolog lines are
+  read up to their level only (full parse for warnings and above, and a sample of the rest for the
+  patterns panel — exact below 2 000 info records per file). ~2× faster per line.
+- **Histogram cache** (`histogram_cache`, default on): the counts of a file wholly inside the
+  window and quiet for 10 min are stored in `%kernel.cache_dir%/logui`, keyed by path, size,
+  mtime, bucket width and filters. Bars are now aligned to the clock (`intdiv(ts, interval)`) so
+  a cached count fits any window; the chart clips the first bar to the window.
+- **Sampling**: when the files left will not fit in the budget, an even share of each is read and
+  the counts extrapolated; the response carries `sampled` (share read) and the UI shows `≈`.
+- **Warm-up after the response**: files that could only be sampled are counted in full once the
+  response is sent (`LogExplorer::warmHistogram()`, one at a time under a lock), so the next load is
+  exact. 7 days × 100 000 lines on a Pi: 4.6 s sampled, then milliseconds once warm.
+- Timestamp parsing resolves each ISO stamp once per second (microseconds no longer defeat the memo).
+- ANSI escapes are only stripped from lines that contain an escape character.
+- Log patterns memoise message → pattern, so repeated messages skip the six normalising regexes.
 
 ### Added
 - **Timings in the footer**: `/explore/histogram` and `/explore/query` return `timings.steps`

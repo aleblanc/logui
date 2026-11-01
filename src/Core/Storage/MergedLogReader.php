@@ -18,6 +18,7 @@ use Aleblanc\LogUi\Core\Stats\Timings;
  * the LogQL stream selector: `{file="var/log/dev.log"}`.
  *
  * @phpstan-import-type Row from PlainLogReader
+ * @phpstan-import-type Tick from PlainLogReader
  */
 final class MergedLogReader
 {
@@ -55,8 +56,12 @@ final class MergedLogReader
 
         $streams = [];
         foreach ($open as $ref => $path) {
-            $report = null === $timings ? null : static function (float $seekMs, int $bytes, int $rows, int $size) use ($timings, $ref): void {
+            $report = null === $timings ? null : static function (float $seekMs, int $bytes, int $rows, int $size, bool $capped) use ($timings, $ref): void {
                 $timings->fileRead((string) $ref, $seekMs, $bytes, $rows, $size);
+                if ($capped) {
+                    // The byte cap stopped this file mid-window: what follows is partial, say so.
+                    $timings->budgetHit();
+                }
             };
             $streams[$ref] = $this->reader->readRange($path, $fromMs, $toMs, $maxBytes, $report);
         }
@@ -117,6 +122,24 @@ final class MergedLogReader
         }
 
         yield from $this->merge($streams);
+    }
+
+    /**
+     * One source reduced to histogram ticks — a single-file concern, see {@see PlainLogReader::scanRange()}.
+     *
+     * @param list<string>                                 $excluding
+     * @param (callable(float,int,int,int,bool):void)|null $report
+     *
+     * @return \Generator<int,Tick>
+     */
+    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null): \Generator
+    {
+        yield from $this->reader->scanRange($path, $fromMs, $toMs, $fraction, $patternEvery, $excluding, $report);
+    }
+
+    public function firstTimestamp(string $path): ?int
+    {
+        return $this->reader->firstTimestamp($path);
     }
 
     /**

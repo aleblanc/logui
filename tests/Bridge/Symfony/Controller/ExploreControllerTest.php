@@ -121,14 +121,14 @@ final class ExploreControllerTest extends TestCase
             $body = json_decode((string) $response->getContent(), true);
             $steps = $body['timings']['steps'];
 
-            foreach (['sources_ms', 'parse_ms', 'open_ms', 'scan_ms', 'encode_ms'] as $step) {
+            foreach (['sources_ms', 'parse_ms', 'scan_ms', 'encode_ms'] as $step) {
                 self::assertArrayHasKey($step, $steps, $endpoint);
             }
             self::assertSame(1, $steps['files_total']);
             self::assertSame(1, $steps['files_opened']);
             self::assertFalse($steps['budget_hit']);
             self::assertSame($this->ref(), $body['timings']['files'][0]['file']);
-            self::assertStringContainsString('open;dur=', (string) $response->headers->get('Server-Timing'));
+            self::assertStringContainsString('scan;dur=', (string) $response->headers->get('Server-Timing'));
         }
     }
 

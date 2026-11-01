@@ -27,6 +27,7 @@ final class Timings
 
     private int $filesTotal = 0;
     private int $filesOpened = 0;
+    private int $filesCached = 0;
     private bool $budgetHit = false;
 
     public function add(string $step, float $ms): void
@@ -63,6 +64,12 @@ final class Timings
     {
         $this->filesTotal += $total;
         $this->filesOpened += $opened;
+    }
+
+    /** One file answered from the histogram cache instead of being read. */
+    public function cached(): void
+    {
+        ++$this->filesCached;
     }
 
     /** The read stopped on the wall-clock budget: what was returned is partial. */
@@ -106,6 +113,7 @@ final class Timings
         }
         $steps['files_total'] = $this->filesTotal;
         $steps['files_opened'] = $this->filesOpened;
+        $steps['files_cached'] = $this->filesCached;
         $steps['budget_hit'] = $this->budgetHit;
 
         $files = [];

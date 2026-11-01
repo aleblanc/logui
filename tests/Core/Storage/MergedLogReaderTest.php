@@ -221,4 +221,16 @@ final class MergedLogReaderTest extends TestCase
         self::assertSame([], $rows);
         self::assertTrue($timings->wasBudgetHit());
     }
+
+    public function test_a_read_cut_by_the_byte_cap_is_reported(): void
+    {
+        $timings = new Timings();
+        $rows = iterator_to_array(
+            $this->merged()->readRange(['a.log' => $this->makeFile('a', range(0, 99))], $this->at(0), $this->at(99), 500, $timings),
+            false,
+        );
+
+        self::assertLessThan(100, \count($rows));
+        self::assertTrue($timings->wasBudgetHit(), 'a partial read must not look complete');
+    }
 }

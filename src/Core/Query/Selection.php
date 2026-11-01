@@ -123,6 +123,55 @@ final class Selection
      *
      * @param Row $row
      */
+    /**
+     * Whether answering needs each record's text: a search term or a picked pattern does. Without
+     * them a histogram can count from line headers alone.
+     */
+    public function needsText(): bool
+    {
+        return null !== $this->grep || null !== $this->pattern;
+    }
+
+    /**
+     * Paths whose mention hides a record (LogUI's own traffic).
+     *
+     * @return list<string>
+     */
+    public function excluding(): array
+    {
+        return array_values($this->excluding);
+    }
+
+    /**
+     * Everything a histogram tally depends on besides the text filters — part of its cache key.
+     *
+     * @return array<string,mixed>
+     */
+    public function fingerprint(): array
+    {
+        return [
+            'levels' => array_keys($this->levels),
+            'channels' => array_keys($this->channels),
+            'types' => array_keys($this->types),
+            'excluding' => $this->excluding,
+            'grep' => null !== $this->grep,
+            'pattern' => $this->pattern,
+        ];
+    }
+
+    public function matchesFacetValues(string $type, string $level, string $channel): bool
+    {
+        if ([] !== $this->types && !isset($this->types[$type])) {
+            return false;
+        }
+
+        if ([] !== $this->levels && !isset($this->levels[strtolower($level)])) {
+            return false;
+        }
+
+        return [] === $this->channels || isset($this->channels[$channel]);
+    }
+
     public function matchesFacets(array $row): bool
     {
         if ([] !== $this->types && !isset($this->types[$row['type']])) {

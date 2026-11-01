@@ -23,6 +23,7 @@ use Aleblanc\LogUi\Bridge\Symfony\Security\UiAuthCookieListener;
 use Aleblanc\LogUi\Bridge\Symfony\Telemetry\TelemetryLogger;
 use Aleblanc\LogUi\Core\Capture\ProfileContextFactory;
 use Aleblanc\LogUi\Core\Capture\Redactor;
+use Aleblanc\LogUi\Core\Query\HistogramCache;
 use Aleblanc\LogUi\Core\Query\LogExplorer;
 use Aleblanc\LogUi\Core\Query\LogQL\Parser as LogQLParser;
 use Aleblanc\LogUi\Core\Stats\MemoryProbe;
@@ -102,6 +103,10 @@ final class LogUiBundle extends AbstractBundle
                     // service always receives a float, whatever the YAML looked like.
                     ->beforeNormalization()->always(static fn (mixed $v): float => (float) $v)->end()
                     ->info('Wall-clock ceiling for one explorer query. A backstop against a single user tying up a worker, so it is deliberately low — raise it on a slow disk, or when you routinely sweep weeks across many files. Anything cut short comes back marked truncated, and the UI says so.')
+                ->end()
+                ->booleanNode('histogram_cache')
+                    ->defaultTrue()
+                    ->info('Keep the histogram counts of rotated log files under %kernel.cache_dir%/logui, so a week of history is read once, not on every page load. Safe to delete at any time.')
                 ->end()
                 ->scalarNode('ui_path')->defaultValue('/_logui')->end()
                 ->enumNode('access')
@@ -255,11 +260,16 @@ final class LogUiBundle extends AbstractBundle
         $services->set('logui.merged_reader', MergedLogReader::class)
             ->args([new Reference('logui.plainreader')]);
         $services->set('logui.logql_parser', LogQLParser::class);
+        if ($config['histogram_cache']) {
+            $services->set('logui.histogram_cache', HistogramCache::class)
+                ->args(['%kernel.cache_dir%/logui']);
+        }
         $services->set('logui.explorer', LogExplorer::class)
             ->args([
                 new Reference('logui.merged_reader'),
                 new Reference('logui.logql_parser'),
                 $config['query_budget_seconds'],
+                $config['histogram_cache'] ? new Reference('logui.histogram_cache') : null,
             ]);
         $services->set(ExploreController::class)
             ->args([
