@@ -171,9 +171,13 @@ final class PlainLogReader
      * Lines that carry no date of their own are yielded when they fall inside the scanned window:
      * positionally they belong to the range, and dropping them would silently hide raw log output.
      *
+     * @param (callable(float,int,int,int):void)|null $report receives, once the read ends, the time the
+     *                                                    binary search took (ms), the bytes scanned
+     *                                                    after it, the rows yielded and the file size
+     *
      * @return \Generator<int,Row>
      */
-    public function readRange(string $path, int $fromMs, int $toMs, int $maxBytes = self::DEFAULT_RANGE_BYTES): \Generator
+    public function readRange(string $path, int $fromMs, int $toMs, int $maxBytes = self::DEFAULT_RANGE_BYTES, ?callable $report = null): \Generator
     {
         if (!is_file($path) || $fromMs > $toMs) {
             return;
@@ -189,7 +193,10 @@ final class PlainLogReader
             $anchor = $this->anchorFor($path);
 
             $seeker = new LogSeeker(fn (string $line): ?int => $this->lineTimestamp($line, $anchor));
+            $seekStarted = hrtime(true);
             $start = $seeker->offsetFor($handle, $size, $fromMs);
+            $seekMs = (hrtime(true) - $seekStarted) / 1e6;
+            $yielded = 0;
 
             if (-1 === fseek($handle, $start)) {
                 return;
@@ -229,6 +236,7 @@ final class PlainLogReader
                 }
 
                 yield $row;
+                ++$yielded;
 
                 $budget -= \strlen($row['message']) + 64;
                 if ($budget <= 0) {
@@ -236,6 +244,10 @@ final class PlainLogReader
                 }
             }
         } finally {
+            if (null !== $report && isset($seekMs, $start)) {
+                $end = ftell($handle);
+                $report($seekMs, max(0, (false === $end ? $start : $end) - $start), $yielded ?? 0, $size ?? 0);
+            }
             fclose($handle);
         }
     }

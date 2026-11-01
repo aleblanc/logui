@@ -84,7 +84,10 @@
         nav.tabs a:hover { color:var(--txt); text-decoration:none; }
         nav.tabs a.on { color:var(--txt); border-bottom-color:var(--accent); }
         footer.logui-footer { max-width:1100px; margin:8px auto 24px; padding:14px 20px 0; border-top:1px solid var(--line);
-            display:flex; align-items:center; justify-content:center; gap:8px; font-size:.78rem; color:var(--mut); }
+            display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:8px; font-size:.78rem; color:var(--mut); }
+        footer.logui-footer #logui-timings { flex-basis:100%; text-align:center; font:11px/1.6 ui-monospace,monospace; }
+        footer.logui-footer #logui-timings:empty { display:none; }
+        footer.logui-footer #logui-timings .slow { color:var(--warn); }
         footer.logui-footer a { color:var(--mut); display:inline-flex; align-items:center; gap:5px; }
         footer.logui-footer a:hover { color:var(--accent); }
         footer.logui-footer svg { display:block; }
@@ -137,6 +140,8 @@
     </nav>
     <main class="{% block main_class %}{% endblock %}">{% block content %}{% endblock %}</main>
     <footer class="logui-footer">
+        {# Filled by pages that fetch data (the explorer): where each call spent its time. #}
+        <span id="logui-timings"></span>
         <span>Made with <span class="heart" aria-label="love">♥</span> by</span>
         <a href="https://github.com/aleblanc/logui" target="_blank" rel="noopener noreferrer">
             <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">

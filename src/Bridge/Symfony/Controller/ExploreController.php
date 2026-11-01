@@ -11,6 +11,7 @@ use Aleblanc\LogUi\Core\Query\LogExplorer;
 use Aleblanc\LogUi\Core\Query\LogQL\Evaluator as LogQlEvaluator;
 use Aleblanc\LogUi\Core\Query\LogQL\SyntaxError;
 use Aleblanc\LogUi\Core\Query\Selection;
+use Aleblanc\LogUi\Core\Stats\Timings;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -89,27 +90,31 @@ final class ExploreController
     /** GET {ui}/explore/query — matching rows for the current query and window. */
     public function query(Request $request): JsonResponse
     {
-        if (!$this->guard->authorize($request)) {
+        $timings = $this->startTimings($request);
+        $authorized = $timings->measure('auth', fn (): bool => $this->guard->authorize($request));
+        if (!$authorized) {
             return new JsonResponse(['error' => 'Forbidden'], 403);
         }
 
         [$from, $to] = $this->window($request);
 
         try {
+            $sources = $timings->measure('sources', fn (): array => $this->resolveSources($request));
             $result = $this->explorer->query(
-                $this->resolveSources($request),
+                $sources,
                 $request->query->getString('q'),
                 $from,
                 $to,
                 max(1, min(LogExplorer::MAX_ROWS, $request->query->getInt('limit', self::DEFAULT_LIMIT))),
                 max(0, $request->query->getInt('offset')),
                 $this->selection($request),
+                $timings,
             );
         } catch (SyntaxError $e) {
             return $this->syntaxError($e);
         }
 
-        return new JsonResponse([
+        return $this->timed($timings, [
             'rows' => array_map($this->publicRow(...), $result['rows']),
             'total' => $result['total'],
             'truncated' => $result['truncated'],
@@ -122,26 +127,65 @@ final class ExploreController
     /** GET {ui}/explore/histogram — record counts per time bucket, broken down by level. */
     public function histogram(Request $request): JsonResponse
     {
-        if (!$this->guard->authorize($request)) {
+        $timings = $this->startTimings($request);
+        $authorized = $timings->measure('auth', fn (): bool => $this->guard->authorize($request));
+        if (!$authorized) {
             return new JsonResponse(['error' => 'Forbidden'], 403);
         }
 
         [$from, $to] = $this->window($request);
 
         try {
+            $sources = $timings->measure('sources', fn (): array => $this->resolveSources($request));
             $result = $this->explorer->histogram(
-                $this->resolveSources($request),
+                $sources,
                 $request->query->getString('q'),
                 $from,
                 $to,
                 $this->selection($request),
                 max(1, min(500, $request->query->getInt('top', 20))),
+                $timings,
             );
         } catch (SyntaxError $e) {
             return $this->syntaxError($e);
         }
 
-        return new JsonResponse($result);
+        return $this->timed($timings, $result);
+    }
+
+    /**
+     * A fresh breakdown for this request, opened with the time PHP and the kernel took to reach
+     * the controller — what the request cost before LogUI did anything (boot, listeners, a session
+     * lock held by another request…).
+     */
+    private function startTimings(Request $request): Timings
+    {
+        $timings = new Timings();
+        $requestStart = $request->server->get('REQUEST_TIME_FLOAT');
+        if (\is_float($requestStart) || \is_int($requestStart)) {
+            $timings->add('boot', max(0.0, (microtime(true) - (float) $requestStart) * 1000));
+        }
+
+        return $timings;
+    }
+
+    /**
+     * The payload with its `timings`, also mirrored as a `Server-Timing` header for the browser's
+     * network panel. JSON encoding is timed too: a large result is not free to serialise.
+     *
+     * @param non-empty-array<string,mixed> $payload
+     */
+    private function timed(Timings $timings, array $payload): JsonResponse
+    {
+        $flags = JsonResponse::DEFAULT_ENCODING_OPTIONS | \JSON_THROW_ON_ERROR;
+        $json = $timings->measure('encode', static fn (): string => json_encode($payload, $flags));
+        // Spliced in after the fact so the payload is encoded once, and `encode` can report itself.
+        $json = substr($json, 0, -1).',"timings":'.json_encode($timings->toArray(), $flags).'}';
+
+        $response = JsonResponse::fromJsonString($json);
+        $response->headers->set('Server-Timing', $timings->serverTimingHeader());
+
+        return $response;
     }
 
     /** GET {ui}/explore/profile — the full capture (records included) behind one profile row. */

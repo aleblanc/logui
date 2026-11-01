@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aleblanc\LogUi\Tests\Core\Storage;
 
+use Aleblanc\LogUi\Core\Stats\Timings;
 use Aleblanc\LogUi\Core\Storage\MergedLogReader;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 use Aleblanc\LogUi\Core\Time\TimestampParser;
@@ -176,5 +177,48 @@ final class MergedLogReaderTest extends TestCase
 
         $timestamps = array_map(static fn (array $r): ?int => $r['ts'], $rows);
         self::assertSame([$this->at(50), $this->at(75), $this->at(100)], $timestamps);
+    }
+
+    public function test_files_last_written_before_the_window_are_not_opened(): void
+    {
+        // Same content, but one file was last touched long before the window: a log file only
+        // grows at its end, so it cannot hold anything newer than its mtime.
+        $old = $this->makeFile('old', [100]);
+        $fresh = $this->makeFile('fresh', [100]);
+        touch($old, intdiv($this->at(0), 1000) - 3600);
+        touch($fresh, intdiv($this->at(200), 1000));
+
+        $timings = new Timings();
+        $rows = iterator_to_array(
+            $this->merged()->readRange(['old.log' => $old, 'fresh.log' => $fresh], $this->at(50), $this->at(150), timings: $timings),
+            false,
+        );
+
+        self::assertSame(['fresh.log'], array_values(array_unique(array_map(static fn (array $r): string => $r['file'], $rows))));
+        self::assertSame(2, $timings->toArray()['steps']['files_total']);
+        self::assertSame(1, $timings->toArray()['steps']['files_opened']);
+    }
+
+    public function test_a_file_within_the_mtime_slack_is_still_read(): void
+    {
+        $path = $this->makeFile('late', [100]);
+        // Written 30 s before the window starts, under the one-minute slack: kept.
+        touch($path, intdiv($this->at(70), 1000));
+
+        $rows = iterator_to_array($this->merged()->readRange(['late.log' => $path], $this->at(100), $this->at(150)), false);
+
+        self::assertCount(1, $rows);
+    }
+
+    public function test_an_expired_deadline_stops_before_opening_the_files(): void
+    {
+        $timings = new Timings();
+        $rows = iterator_to_array(
+            $this->merged()->readRange(['a.log' => $this->makeFile('a', [0, 10])], $this->at(0), $this->at(20), timings: $timings, deadline: microtime(true) - 1),
+            false,
+        );
+
+        self::assertSame([], $rows);
+        self::assertTrue($timings->wasBudgetHit());
     }
 }

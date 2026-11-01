@@ -6,7 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+- **Slow explorer on many rotated files**: `MergedLogReader::readRange()` no longer opens files whose
+  mtime is older than the window (one `stat` instead of a binary search + a parsed block each; 60 s
+  slack). With a `*-YYYY-MM-DD.log` per day, the default 1 h window went from opening every file to a
+  handful.
+- The explorer's 5 s budget now also covers opening the files and rows the query filters out; it
+  stops there and answers `truncated: true` instead of running past it.
+
 ### Added
+- **Timings in the footer**: `/explore/histogram` and `/explore/query` return `timings.steps`
+  (`boot_ms`, `auth_ms`, `sources_ms`, `parse_ms`, `open_ms`, `scan_ms`, `aggregate_ms`,
+  `encode_ms`, `files_total`, `files_opened`, `budget_hit`) and the slowest `timings.files`, mirrored
+  in a `Server-Timing` header. The explorer shows one line per call in the footer, with the browser
+  round trip and the unaccounted `wait`; hover for the per-file breakdown.
 - `GET {ui}/explore/profile?file=&ts=&id=` returns the full capture behind one request row.
 - `types[]` parameter on the explorer endpoints and page.
 - **Record correlation**: `Bridge\Symfony\Monolog\ProfileIdProcessor` stamps every Monolog record

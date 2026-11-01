@@ -674,13 +674,67 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   }
 
   function fetchJson(path, extra) {
+    var started = performance.now();
     return fetch(BASE + path + '?' + params(extra), { headers: { Accept: 'application/json' } })
-      .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); });
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body, ms: performance.now() - started }; });
+      });
+  }
+
+  // ---------------------------------------------------------------- timings (footer)
+
+  var timingLines = {};
+  var STEP_LABELS = { boot: 'boot', auth: 'auth', sources: 'sources', parse: 'parse', open: 'open', scan: 'scan', aggregate: 'aggregate', encode: 'encode' };
+
+  /**
+   * One footer line per endpoint: the round trip seen by the browser, then the server's own
+   * steps. Whatever the server does not account for (network, a queue, a session lock held by a
+   * parallel request) shows up as `wait`. Hovering a line lists the slowest files.
+   */
+  function showTimings(name, res) {
+    var t = res.body && res.body.timings;
+    var el = document.getElementById('logui-timings');
+    if (!t || !el) return;
+
+    var steps = t.steps, server = 0;
+    var line = document.createElement('div');
+    var head = document.createElement('b');
+    head.textContent = name + ' ' + fmtMs(res.ms);
+    line.appendChild(head);
+
+    function part(text, slow) {
+      line.appendChild(document.createTextNode(' · '));
+      var span = document.createElement('span');
+      if (slow) span.className = 'slow';
+      span.textContent = text;
+      line.appendChild(span);
+    }
+
+    Object.keys(STEP_LABELS).forEach(function (k) {
+      var ms = steps[k + '_ms'];
+      if (undefined === ms) return;
+      server += ms;
+      var text = STEP_LABELS[k] + ' ' + fmtMs(ms);
+      if ('open' === k) text += ' (' + steps.files_opened + '/' + steps.files_total + ' files)';
+      part(text, ms >= 1000);
+    });
+    part('wait ' + fmtMs(Math.max(0, res.ms - server)), res.ms - server >= 1000);
+    if (steps.budget_hit) part('budget reached — partial', true);
+
+    line.title = (t.files || []).map(function (f) {
+      return f.file + '  ' + fmtMs(f.ms) + ' (seek ' + fmtMs(f.seekMs) + ', ' + (fmtBytes(f.bytes) || '0 B') +
+        ' read of ' + (fmtBytes(f.size) || '0 B') + ', ' + f.rows + ' rows)';
+    }).join('\n');
+
+    timingLines[name] = line;
+    el.textContent = '';
+    Object.keys(timingLines).forEach(function (k) { el.appendChild(timingLines[k]); });
   }
 
   function loadHistogram() {
     fetchJson('/histogram')
       .then(function (res) {
+        showTimings('histogram', res);
         if (!res.ok) { showError(res.body.error || 'Query error'); return; }
         showError(null);
         state.buckets = res.body.buckets;
@@ -750,6 +804,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   function loadRows() {
     fetchJson('/query')
       .then(function (res) {
+        showTimings('query', res);
         if (!res.ok) { showError(res.body.error || 'Query error'); return; }
         render(res.body.rows);   // countRows() handles the counter and the empty state
       })

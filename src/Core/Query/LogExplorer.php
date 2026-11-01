@@ -7,6 +7,7 @@ namespace Aleblanc\LogUi\Core\Query;
 use Aleblanc\LogUi\Core\Model\Profile;
 use Aleblanc\LogUi\Core\Query\LogQL\Evaluator;
 use Aleblanc\LogUi\Core\Query\LogQL\Parser;
+use Aleblanc\LogUi\Core\Stats\Timings;
 use Aleblanc\LogUi\Core\Storage\MergedLogReader;
 use Aleblanc\LogUi\Core\Storage\PlainLogReader;
 
@@ -62,10 +63,11 @@ final class LogExplorer
      *
      * @return array{rows:list<Row>,total:int,truncated:bool,tookMs:float}
      */
-    public function query(array $sources, string $logql, int $fromMs, int $toMs, int $limit = self::MAX_ROWS, int $offset = 0, ?Selection $selection = null): array
+    public function query(array $sources, string $logql, int $fromMs, int $toMs, int $limit = self::MAX_ROWS, int $offset = 0, ?Selection $selection = null, ?Timings $timings = null): array
     {
         $started = microtime(true);
-        $evaluator = new Evaluator($this->parser->parse($logql));
+        $timings ??= new Timings();
+        $evaluator = $timings->measure('parse', fn (): Evaluator => new Evaluator($this->parser->parse($logql)));
         $selection ??= new Selection();
 
         $rows = [];
@@ -75,7 +77,8 @@ final class LogExplorer
 
         $deadline = $started + $this->budgetSeconds;
 
-        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs)) as $row) {
+        $scanStarted = microtime(true);
+        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs, $timings, $deadline)) as $row) {
             if (!$selection->matches($row)) {
                 continue;
             }
@@ -98,6 +101,9 @@ final class LogExplorer
                 break;
             }
         }
+
+        $this->closeScan($timings, $scanStarted);
+        $truncated = $truncated || $timings->wasBudgetHit();
 
         // Newest first, as every other LogUI listing.
         $rows = array_reverse($rows);
@@ -126,10 +132,11 @@ final class LogExplorer
      *
      * @return array{buckets:list<array{ts:int,count:int,levels:array<string,int>,requests:int,latency:array{n:int,p50:float,p95:float}|null}>,facets:array{type:array<string,int>,level:array<string,int>,channel:array<string,int>,file:array<string,int>},patterns:list<array{pattern:string,count:int,sample:string,level:string}>,profiles:array{count:int,failed:int,p50:float,p95:float,sql:int},interval:int,from:int,to:int,total:int,matched:int,truncated:bool,tookMs:float}
      */
-    public function histogram(array $sources, string $logql, int $fromMs, int $toMs, ?Selection $selection = null, int $top = 20): array
+    public function histogram(array $sources, string $logql, int $fromMs, int $toMs, ?Selection $selection = null, int $top = 20, ?Timings $timings = null): array
     {
         $started = microtime(true);
-        $evaluator = new Evaluator($this->parser->parse($logql));
+        $timings ??= new Timings();
+        $evaluator = $timings->measure('parse', fn (): Evaluator => new Evaluator($this->parser->parse($logql)));
         $selection ??= new Selection();
         $interval = $this->bucketWidth($fromMs, $toMs);
 
@@ -151,7 +158,8 @@ final class LogExplorer
         $sql = 0;
         $patterns = new Patterns();
 
-        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs)) as $row) {
+        $scanStarted = microtime(true);
+        foreach ($evaluator->filter($this->read($sources, $fromMs, $toMs, $timings, $deadline)) as $row) {
             if (0 === ++$seen % self::BUDGET_CHECK_EVERY && microtime(true) > $deadline) {
                 // Counting stops here; the chart shows what was measured and says so.
                 $truncated = true;
@@ -210,6 +218,9 @@ final class LogExplorer
             }
             ++$total;
         }
+        $this->closeScan($timings, $scanStarted);
+        $truncated = $truncated || $timings->wasBudgetHit();
+        $aggregateStarted = microtime(true);
 
         ksort($buckets);
         foreach ($buckets as $slot => $_bucket) {
@@ -230,11 +241,13 @@ final class LogExplorer
         unset($counts);
 
         sort($durations);
+        $topPatterns = $patterns->top($top);
+        $timings->add('aggregate', (microtime(true) - $aggregateStarted) * 1000);
 
         return [
             'buckets' => array_values($buckets),
             'facets' => $facets,
-            'patterns' => $patterns->top($top),
+            'patterns' => $topPatterns,
             'profiles' => [
                 'count' => \count($durations),
                 'failed' => $failed,
@@ -385,13 +398,18 @@ final class LogExplorer
      *
      * @return \Generator<int,Row>
      */
-    /**
-     * @param array<string,string> $sources
-     *
-     * @return \Generator<int,Row>
-     */
-    private function read(array $sources, int $fromMs, int $toMs): \Generator
+    private function read(array $sources, int $fromMs, int $toMs, ?Timings $timings = null, ?float $deadline = null): \Generator
     {
-        yield from $this->merged->readRange($sources, $fromMs, $toMs);
+        yield from $this->merged->readRange($sources, $fromMs, $toMs, PlainLogReader::DEFAULT_RANGE_BYTES, $timings, $deadline);
+    }
+
+    /**
+     * Records the read loop as `scan`, minus the `open` phase it contains: opening the files
+     * happens lazily inside the first iteration, and the two are worth telling apart.
+     */
+    private function closeScan(Timings $timings, float $scanStarted): void
+    {
+        $loopMs = (microtime(true) - $scanStarted) * 1000;
+        $timings->add('scan', max(0.0, $loopMs - $timings->get('open')));
     }
 }

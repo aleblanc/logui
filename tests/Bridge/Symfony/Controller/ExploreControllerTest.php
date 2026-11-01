@@ -114,6 +114,24 @@ final class ExploreControllerTest extends TestCase
         self::assertLessThanOrEqual(1, \count($body['patterns']));
     }
 
+    public function test_histogram_and_query_report_their_timings(): void
+    {
+        foreach (['histogram', 'query'] as $endpoint) {
+            $response = $this->controller()->{$endpoint}(Request::create('/_logui/explore/'.$endpoint, 'GET'));
+            $body = json_decode((string) $response->getContent(), true);
+            $steps = $body['timings']['steps'];
+
+            foreach (['sources_ms', 'parse_ms', 'open_ms', 'scan_ms', 'encode_ms'] as $step) {
+                self::assertArrayHasKey($step, $steps, $endpoint);
+            }
+            self::assertSame(1, $steps['files_total']);
+            self::assertSame(1, $steps['files_opened']);
+            self::assertFalse($steps['budget_hit']);
+            self::assertSame($this->ref(), $body['timings']['files'][0]['file']);
+            self::assertStringContainsString('open;dur=', (string) $response->headers->get('Server-Timing'));
+        }
+    }
+
     public function test_context_404s_on_unknown_file(): void
     {
         self::assertSame(404, $this->controller()->context(Request::create('/_logui/explore/context', 'GET', ['file' => 'nope.log', 'offset' => 0]))->getStatusCode());
