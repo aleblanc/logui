@@ -37,6 +37,8 @@ final class Selection
      * @param list<string> $excluding records mentioning any of these paths are dropped — see {@see matchesSearch()}
      * @param list<string> $types     row types to keep: log, request, command
      * @param string|null  $pattern   normalised message pattern to keep — see {@see Patterns}
+     * @param list<string> $ownPaths  paths that mark LogUI's own traffic, hidden or not — an index
+     *                                flags them once, then hides or shows them per request
      */
     public function __construct(
         array $levels = [],
@@ -45,6 +47,7 @@ final class Selection
         private readonly array $excluding = [],
         array $types = [],
         private readonly ?string $pattern = null,
+        private readonly array $ownPaths = [],
     ) {
         // Indexed by value: matching happens once per row, so it must be a hash lookup.
         $this->levels = array_fill_keys(array_map(strtolower(...), $levels), true);
@@ -143,20 +146,18 @@ final class Selection
     }
 
     /**
-     * Everything a histogram tally depends on besides the text filters — part of its cache key.
+     * What marks LogUI's own traffic: the paths given as such, or failing that the hidden ones.
      *
-     * @return array<string,mixed>
+     * @return list<string>
      */
-    public function fingerprint(): array
+    public function ownPaths(): array
     {
-        return [
-            'levels' => array_keys($this->levels),
-            'channels' => array_keys($this->channels),
-            'types' => array_keys($this->types),
-            'excluding' => $this->excluding,
-            'grep' => null !== $this->grep,
-            'pattern' => $this->pattern,
-        ];
+        return array_values([] !== $this->ownPaths ? $this->ownPaths : $this->excluding);
+    }
+
+    public function matchesLevel(string $level): bool
+    {
+        return [] === $this->levels || isset($this->levels[strtolower($level)]);
     }
 
     public function matchesFacetValues(string $type, string $level, string $channel): bool

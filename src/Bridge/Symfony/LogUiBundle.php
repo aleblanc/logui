@@ -23,7 +23,7 @@ use Aleblanc\LogUi\Bridge\Symfony\Security\UiAuthCookieListener;
 use Aleblanc\LogUi\Bridge\Symfony\Telemetry\TelemetryLogger;
 use Aleblanc\LogUi\Core\Capture\ProfileContextFactory;
 use Aleblanc\LogUi\Core\Capture\Redactor;
-use Aleblanc\LogUi\Core\Query\HistogramCache;
+use Aleblanc\LogUi\Core\Query\MinuteIndexStore;
 use Aleblanc\LogUi\Core\Query\LogExplorer;
 use Aleblanc\LogUi\Core\Query\LogQL\Parser as LogQLParser;
 use Aleblanc\LogUi\Core\Stats\MemoryProbe;
@@ -106,7 +106,7 @@ final class LogUiBundle extends AbstractBundle
                 ->end()
                 ->booleanNode('histogram_cache')
                     ->defaultTrue()
-                    ->info('Keep the histogram counts of rotated log files under %kernel.cache_dir%/logui, so a week of history is read once, not on every page load. Safe to delete at any time.')
+                    ->info('Keep an incremental, per-minute index of each log file under %kernel.cache_dir%/logui: a page load only reads what was written since the previous one, whatever the window. Safe to delete at any time.')
                 ->end()
                 ->scalarNode('ui_path')->defaultValue('/_logui')->end()
                 ->enumNode('access')
@@ -261,7 +261,7 @@ final class LogUiBundle extends AbstractBundle
             ->args([new Reference('logui.plainreader')]);
         $services->set('logui.logql_parser', LogQLParser::class);
         if ($config['histogram_cache']) {
-            $services->set('logui.histogram_cache', HistogramCache::class)
+            $services->set('logui.histogram_cache', MinuteIndexStore::class)
                 ->args(['%kernel.cache_dir%/logui']);
         }
         $services->set('logui.explorer', LogExplorer::class)

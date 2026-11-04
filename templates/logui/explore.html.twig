@@ -684,7 +684,7 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
   // ---------------------------------------------------------------- timings (footer)
 
   var timingLines = {};
-  var STEP_LABELS = { boot: 'boot', auth: 'auth', sources: 'sources', parse: 'parse', cache: 'cache', open: 'open', scan: 'scan', aggregate: 'aggregate', encode: 'encode' };
+  var STEP_LABELS = { boot: 'boot', auth: 'auth', sources: 'sources', parse: 'parse', index: 'index', cache: 'cache', open: 'open', scan: 'scan', aggregate: 'aggregate', encode: 'encode' };
 
   /**
    * One footer line per endpoint: the round trip seen by the browser, then the server's own
@@ -715,8 +715,8 @@ select.ex-mini { padding:3px 6px; border-radius:8px; }
       if (undefined === ms) return;
       server += ms;
       var text = STEP_LABELS[k] + ' ' + fmtMs(ms);
-      if ('open' === k || ('cache' === k && undefined === steps.open_ms)) text += ' (' + steps.files_opened + '/' + steps.files_total + ' files)';
-      if ('cache' === k) text += ', ' + (steps.files_cached || 0) + ' hit';
+      if ('open' === k) text += ' (' + steps.files_opened + '/' + steps.files_total + ' files)';
+      if ('cache' === k) text += ' (' + (steps.files_cached || 0) + '/' + steps.files_opened + ' indexed, ' + steps.files_total + ' files)';
       part(text, ms >= 1000);
     });
     part('wait ' + fmtMs(Math.max(0, res.ms - server)), res.ms - server >= 1000);

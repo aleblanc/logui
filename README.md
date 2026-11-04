@@ -133,7 +133,7 @@ log_ui:
     telemetry_max_files: 0             # with rotation on, how many dated files to keep (0 = all)
     slow_query_ms: 50                  # SQL slower than this is flagged
     query_budget_seconds: 5.0          # wall-clock ceiling for one explorer query (see below)
-    histogram_cache: true              # cache the histogram counts of rotated files in %kernel.cache_dir%/logui
+    histogram_cache: true              # incremental per-minute index of each log file, in %kernel.cache_dir%/logui
     max_records_per_profile: 1000      # cap on records captured per request (bounds line size)
     ui_path: /_logui
     access: password                   # password (default) | delegate
@@ -270,27 +270,32 @@ Rotation is `none` by default, and you should **leave it that way while `telemet
 application's own log** (`prod.log`, `dev.log`): rotating that file is logrotate's job, not a
 library's.
 
-### Long ranges: header counting, cache, sampling
+### Long ranges: incremental index, header counting, sampling
 
 With no text search (no search term, no LogQL, no picked pattern) — the default view — the
-histogram does not parse whole lines: it reads each Monolog line up to its level, and parses in
-full only warnings and above plus a sample of the rest for the patterns panel. Files are then
-handled one by one, newest first:
+histogram never parses whole lines and, once warm, barely reads the logs at all:
 
-- **Cache** — a file that lies wholly inside the window and has not been written for ten minutes
-  (yesterday's `dev-2026-10-31.log`) is counted once and kept under `%kernel.cache_dir%/logui`
-  (`histogram_cache: false` turns it off). Its key includes the file's size and mtime, so an entry
-  is never stale. Today's file is always read.
-- **Sampling** — when what is left will not fit in the budget at the throughput measured so far,
-  only an evenly spread share of each file is read and the counts are scaled up. The chart and
-  KPIs then read `≈`, and the footer says which share was read.
-- **Warm-up** — when rotated files had to be sampled, they are counted in full right after the
-  response is sent (PHP-FPM), one warm-up at a time. The next load of the same view is exact and
-  comes from the cache.
+- **Incremental index** — each log file gets a per-minute index under `%kernel.cache_dir%/logui`
+  (`histogram_cache: false` turns it off). It remembers how far it has read: a page load only reads
+  what was appended since the previous one, like the live tail, and answers the window from the
+  index. 7, 14 or 30 days cost the same. Each minute stores a count per (type, level, channel), so
+  facet filters and *include self* are answered from the same index; patterns are kept per hour
+  and level (top 200). A rotated, recreated or truncated file is detected (inode, first line, bytes
+  before the offset) and re-indexed. Bars narrower than a minute (windows under ~1 h) are read
+  directly.
+- **Header counting** — Monolog lines are read up to their level; warnings and above, plus a sample
+  of the rest, are parsed in full for the patterns panel. Telemetry lines are read from a compact
+  header written first on the line, never from the records that follow.
+- **Sampling** — what no index covers yet (a first build, a large backlog) and cannot be read
+  within the budget is sampled: an even share of each file is read and the counts scaled up. The
+  KPIs then read `≈` and the footer says which share was read.
+- **Warm-up** — when something had to be sampled, the indexes are caught up right after the
+  response is sent (PHP-FPM), one request per file at a time, progress saved as it goes.
 
-On a Raspberry Pi 4 with an SD card, 7 days × 100 000 lines (155 MB): 4.6 s for the first load,
-sampled at 7 % (count off by 4 %); ~19 s of warm-up in the background; then a few milliseconds,
-exact. A search term still reads every line — see below.
+On a Raspberry Pi 4 with an SD card — 7 daily files of 100 000 lines, a 70 MB telemetry file and a
+growing file of the day (225 MB): first load 4.6 s, estimated within ~5 %; ~15 s of warm-up in the
+background; then 0.6 s, exact, for 8 or 30 days alike, and under a second after 5 000 new lines.
+A search term still reads every line — see below.
 
 ### "Partial result" in the explorer
 

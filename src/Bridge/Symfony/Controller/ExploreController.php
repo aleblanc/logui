@@ -427,6 +427,7 @@ final class ExploreController
             $request->query->getBoolean('include_self') ? [] : $this->ownPaths(),
             $this->strings($request, 'types'),
             '' === ($pattern = $request->query->getString('pattern')) ? null : $pattern,
+            $this->ownPaths(),
         );
     }
 

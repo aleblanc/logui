@@ -57,14 +57,17 @@ final class LogExplorer
     /** Kept back from the budget for merging, aggregating and encoding the answer. */
     private const BUDGET_MARGIN_SECONDS = 0.5;
 
+    /** Unindexed bytes below this are a line being written, not a backlog to warm up for. */
+    private const WARM_UP_BYTES = 65_536;
+
+    /** Share of the budget an index catch-up may use; the rest reads what indexes do not cover. */
+    private const CATCH_UP_SHARE = 0.5;
+
     /** Never read less than this share of a file: below it, the bars are mostly noise. */
     private const MIN_SAMPLE = 0.02;
 
     /** One info/debug record in this many is parsed in full for the patterns panel. */
     private const PATTERN_EVERY = 8;
-
-    /** A file untouched for this long is no longer being written: its count can be cached. */
-    private const QUIET_MS = 600_000;
 
     /** Target number of histogram bars — the bucket width is derived from the window. */
     private const TARGET_BUCKETS = 60;
@@ -81,7 +84,7 @@ final class LogExplorer
         private readonly MergedLogReader $merged,
         private readonly Parser $parser = new Parser(),
         private readonly float $budgetSeconds = self::DEFAULT_BUDGET_SECONDS,
-        private readonly ?HistogramCache $cache = null,
+        private readonly ?MinuteIndexStore $indexes = null,
     ) {
     }
 
@@ -160,7 +163,7 @@ final class LogExplorer
      * Two ways to get there:
      *  - **No text search** (no LogQL, no search term, no picked pattern) — the default view, and
      *    the one that spans days. Files are counted one by one from their line headers
-     *    ({@see histogramByFile()}): rotated files come from the cache, and when what is left
+     *    ({@see histogramByFile()}): each file's incremental index answers, and when what is left
      *    cannot be read within the budget, files are sampled and the counts extrapolated
      *    (`sampled` says which share was read).
      *  - **Text search** — every line is parsed and matched, across the merged sources.
@@ -205,57 +208,46 @@ final class LogExplorer
     }
 
     /**
-     * Reads in full, and caches, every file of the window that {@see histogram()} could have
-     * answered from the cache but had to sample or skip. Meant to run once the response has been
-     * sent: the next load of the same view is then exact, and fast.
+     * Brings the index of every file the window touches up to the end of the file. Meant to run
+     * once the response has been sent, when {@see histogram()} had to sample what its index did
+     * not cover yet (a first build, or a backlog of appended lines): the next load is exact.
      *
-     * Only one warm-up runs at a time (a second one returns at once), and it stops after
-     * $maxSeconds — whatever it stored by then is kept.
+     * Each index is locked while it is caught up — a request already busy with one is left alone —
+     * and progress is saved as it goes, so stopping at $maxSeconds loses nothing: the next warm-up
+     * continues from there.
      *
      * @param array<string,string> $sources
      *
-     * @return int files stored
+     * @return int files whose index now reaches their end
      */
     public function warmHistogram(array $sources, int $fromMs, int $toMs, ?Selection $selection = null, float $maxSeconds = 120.0): int
     {
-        if (null === $this->cache) {
-            return 0;
-        }
-        $lock = $this->cache->lock();
-        if (null === $lock) {
+        if (null === $this->indexes) {
             return 0;
         }
 
         $selection ??= new Selection();
-        $interval = $this->bucketWidth($fromMs, $toMs);
         $deadline = microtime(true) + $maxSeconds;
-        $stored = 0;
+        $complete = 0;
 
-        try {
-            foreach ($this->merged->sourcesSince($sources, $fromMs) as $ref => $path) {
-                $ref = (string) $ref;
-                if (microtime(true) > $deadline) {
-                    break;
-                }
-                clearstatcache(true, $path);
-                $stat = ['size' => (int) @filesize($path), 'mtime' => (int) @filemtime($path)];
-                $key = $this->cacheKey($ref, $path, $stat, $fromMs, $toMs, $interval, $selection);
-                if (null === $key || null !== $this->cache->get($key)) {
-                    continue;
-                }
-
-                $tally = new HistogramTally($interval);
-                if ($this->tallyFile($tally, $ref, $path, $fromMs, $toMs, 1.0, $selection, $deadline)) {
-                    continue; // cut short by the deadline: not a complete count, not stored
-                }
-                $this->cache->put($key, $tally);
-                ++$stored;
+        foreach ($this->merged->sourcesSince($sources, $fromMs) as $path) {
+            if (microtime(true) > $deadline) {
+                break;
             }
-        } finally {
-            $this->cache->unlock($lock);
+            $index = $this->indexes->open($path, $selection->ownPaths(), self::PATTERN_EVERY);
+            if (!$index->lock()) {
+                continue;
+            }
+            try {
+                if ($index->catchUp($this->merged, $selection->ownPaths(), self::PATTERN_EVERY, $deadline)) {
+                    ++$complete;
+                }
+            } finally {
+                $index->unlock();
+            }
         }
 
-        return $stored;
+        return $complete;
     }
 
     /**
@@ -263,10 +255,10 @@ final class LogExplorer
      *
      * @return bool whether the deadline cut the count short
      */
-    private function tallyFile(HistogramTally $tally, string $ref, string $path, int $fromMs, int $toMs, float $fraction, Selection $selection, float $deadline, ?callable $report = null): bool
+    private function tallyFile(HistogramTally $tally, string $ref, string $path, int $fromMs, int $toMs, float $fraction, Selection $selection, float $deadline, ?callable $report = null, int $minOffset = 0): bool
     {
         $seen = 0;
-        foreach ($this->merged->scanRange($path, $fromMs, $toMs, $fraction, self::PATTERN_EVERY, $selection->excluding(), $report) as $tick) {
+        foreach ($this->merged->scanRange($path, $fromMs, $toMs, $fraction, self::PATTERN_EVERY, $selection->excluding(), $report, $minOffset) as $tick) {
             if (0 === ++$seen % self::BUDGET_CHECK_EVERY && microtime(true) > $deadline) {
                 return true;
             }
@@ -327,10 +319,12 @@ final class LogExplorer
     /**
      * The fast path: each file counted on its own from line headers, newest first.
      *
-     * 1. Files wholly inside the window that have gone quiet are answered from the cache.
-     * 2. The rest are read; when their size will not fit in what remains of the budget at the rate
-     *    observed so far, only a share of each is read and its counts are scaled up.
-     * 3. A file read in full and wholly inside the window is stored for next time.
+     * With an index store (and bars of a minute or more), each file's {@see MinuteIndex} is first
+     * caught up — only the bytes appended since the last load are read — then answers the window.
+     * Whatever the index does not cover yet (a first build cut by the budget) is read directly,
+     * sampled when it cannot all be read in time, and left for the warm-up after the response.
+     *
+     * Without one, files are read directly, sampled the same way when needed.
      *
      * @param array<string,string> $sources
      *
@@ -346,44 +340,74 @@ final class LogExplorer
         $stats = [];
         foreach ($open as $ref => $path) {
             clearstatcache(true, $path);
-            $stats[$ref] = ['size' => (int) @filesize($path), 'mtime' => (int) @filemtime($path)];
+            $stats[(string) $ref] = ['size' => (int) @filesize($path), 'mtime' => (int) @filemtime($path)];
         }
-        uksort($stats, static fn (string|int $a, string|int $b): int => $stats[$b]['mtime'] <=> $stats[$a]['mtime']);
+        uksort($stats, static fn (string|int $a, string|int $b): int => $stats[(string) $b]['mtime'] <=> $stats[(string) $a]['mtime']);
 
-        // 1. Cache.
-        $toRead = [];
-        $openStarted = hrtime(true);
-        foreach ($stats as $ref => $stat) {
-            $ref = (string) $ref;
-            $key = $this->cacheKey($ref, $open[$ref], $stat, $fromMs, $toMs, $tally->interval(), $selection);
-            $cached = null === $key ? null : $this->cache?->get($key);
-            if (null !== $cached) {
-                $tally->merge($cached);
-                $timings->cached();
-                continue;
-            }
-            $toRead[$ref] = $key;
-        }
-        $timings->add('cache', (hrtime(true) - $openStarted) / 1e6);
+        $indexed = null !== $this->indexes && $tally->interval() >= 60_000;
+        $ownPaths = $selection->ownPaths();
+        // Catching up gets half of what is left: on a first build the other half samples what the
+        // indexes do not cover yet, instead of the newest file eating the whole budget.
+        $catchUpDeadline = microtime(true) + max(0.0, $deadline - microtime(true) - self::BUDGET_MARGIN_SECONDS) * self::CATCH_UP_SHARE;
 
-        // 2. Read what is left, sampling when it cannot all be read in time.
-        $remaining = 0;
-        foreach (array_keys($toRead) as $ref) {
-            $remaining += $stats[(string) $ref]['size'];
-        }
+        // 1. Indexes: catch up on what was appended, answer from them, note what is still unread.
+        /** @var array<string,int> $unread ref => byte offset from which the file must still be read */
+        $unread = [];
         $readBytes = 0;
         $readSeconds = 0.0;
-        $smallest = 1.0;
-        // A cacheable file left sampled or unread is what a warm-up after the response can fix.
         $warmable = false;
+        foreach ($stats as $ref => $stat) {
+            $ref = (string) $ref;
+            if (!$indexed) {
+                $unread[$ref] = 0;
+                continue;
+            }
 
-        foreach ($toRead as $ref => $key) {
+            $started = hrtime(true);
+            $index = $this->indexes->open($open[$ref], $ownPaths, self::PATTERN_EVERY);
+            $before = $index->offset();
+            // Past its share of the budget, an index answers as it is: the rest goes to sampling.
+            if (microtime(true) < $catchUpDeadline && $index->lock()) {
+                try {
+                    $index->catchUp($this->merged, $ownPaths, self::PATTERN_EVERY, $catchUpDeadline);
+                } finally {
+                    $index->unlock();
+                }
+            }
+            $caughtUp = (hrtime(true) - $started) / 1e6;
+            $timings->add('index', $caughtUp);
+            // Catching up is the same work as reading: its throughput is the best estimate there is.
+            $readBytes += $index->offset() - $before;
+            $readSeconds += $caughtUp / 1000;
+            $timings->fileTime($ref, $caughtUp);
+
+            $started = hrtime(true);
+            $index->tallyInto($tally, $fromMs, $toMs, $selection, $ref);
+            $timings->add('cache', (hrtime(true) - $started) / 1e6);
+
+            if ($index->offset() >= $stat['size']) {
+                $timings->cached();
+            } else {
+                $unread[$ref] = $index->offset();
+                // A line still being written is not worth a warm-up; a backlog is.
+                $warmable = $warmable || $stat['size'] - $index->offset() > self::WARM_UP_BYTES;
+            }
+        }
+
+        // 2. Read what no index covers, sampling when it cannot all be read in time.
+        $remaining = 0;
+        foreach ($unread as $ref => $offset) {
+            $remaining += max(0, $stats[(string) $ref]['size'] - $offset);
+        }
+        $smallest = 1.0;
+
+        foreach ($unread as $ref => $offset) {
             $ref = (string) $ref;
             $now = microtime(true);
             if ($now > $deadline) {
                 $timings->budgetHit();
 
-                return [true, $smallest < 1.0 ? $smallest : null, true];
+                return [true, $smallest < 1.0 ? $smallest : null, $warmable];
             }
 
             // Throughput measured on this request once it has read enough to mean something.
@@ -394,62 +418,34 @@ final class LogExplorer
 
             $partial = new HistogramTally($tally->interval());
             $bytes = 0;
-            $report = static function (float $seekMs, int $read, int $rows, int $size) use ($timings, $ref, &$bytes): void {
+            $covered = 0;
+            $report = static function (float $seekMs, int $read, int $rows, int $size, bool $capped = false, int $through = 0) use ($timings, $ref, &$bytes, &$covered): void {
                 $bytes = $read;
+                $covered = $through;
                 $timings->fileRead($ref, $seekMs, $read, $rows, $size);
             };
 
             $fileStarted = microtime(true);
-            $cut = $this->tallyFile($partial, $ref, $open[$ref], $fromMs, $toMs, $fraction, $selection, $deadline, $report);
+            $cut = $this->tallyFile($partial, $ref, $open[$ref], $fromMs, $toMs, $fraction, $selection, $deadline, $report, $offset);
             $elapsed = microtime(true) - $fileStarted;
             $timings->fileTime($ref, $elapsed * 1000);
             $readBytes += $bytes;
             $readSeconds += $elapsed;
-            $remaining -= $stats[$ref]['size'];
+            $remaining -= max(0, $stats[$ref]['size'] - $offset);
 
-            // 3. A complete, exact count of a file wholly inside the window is worth keeping.
-            if (!$cut && $fraction >= 1.0 && null !== $key) {
-                $this->cache?->put($key, $partial);
-            } elseif (null !== $key) {
-                $warmable = true;
-            }
-            $tally->merge($partial, 1.0 / $fraction);
+            // Scale by what was really sampled: a read cut by the budget covered fewer blocks than
+            // planned, and assuming 1/fraction would undercount everything it did not reach.
+            $factor = $fraction < 1.0 || $cut ? ($bytes > 0 ? max(1.0, $covered / $bytes) : 1.0 / $fraction) : 1.0;
+            $tally->merge($partial, $factor);
 
             if ($cut) {
                 $timings->budgetHit();
 
-                return [true, $smallest < 1.0 ? $smallest : null, true];
+                return [true, $smallest < 1.0 ? $smallest : null, $warmable];
             }
         }
 
         return [false, $smallest < 1.0 ? $smallest : null, $warmable];
-    }
-
-    /**
-     * Cache key of one file's tally, or null when the file must be read: no cache, still being
-     * written, or reaching outside the window (its count then depends on where the window falls).
-     *
-     * @param array{size:int,mtime:int} $stat
-     */
-    private function cacheKey(string $ref, string $path, array $stat, int $fromMs, int $toMs, int $interval, Selection $selection): ?string
-    {
-        if (null === $this->cache || 0 === $stat['size']) {
-            return null;
-        }
-        $mtimeMs = $stat['mtime'] * 1000;
-        if ($mtimeMs > $toMs || $mtimeMs > (int) (microtime(true) * 1000) - self::QUIET_MS) {
-            return null;
-        }
-        $first = $this->merged->firstTimestamp($path);
-        if (null === $first || $first < $fromMs) {
-            return null;
-        }
-
-        return $this->cache->key((string) (realpath($path) ?: $path), $stat['size'], $stat['mtime'], [
-            'ref' => $ref,
-            'interval' => $interval,
-            'patternEvery' => self::PATTERN_EVERY,
-        ] + $selection->fingerprint());
     }
 
     /**

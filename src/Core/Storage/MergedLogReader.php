@@ -132,14 +132,23 @@ final class MergedLogReader
      *
      * @return \Generator<int,Tick>
      */
-    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null): \Generator
+    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null, int $minOffset = 0): \Generator
     {
-        yield from $this->reader->scanRange($path, $fromMs, $toMs, $fraction, $patternEvery, $excluding, $report);
+        yield from $this->reader->scanRange($path, $fromMs, $toMs, $fraction, $patternEvery, $excluding, $report, $minOffset);
     }
 
-    public function firstTimestamp(string $path): ?int
+    /**
+     * Ticks from a byte offset to the end of one source — see {@see PlainLogReader::scanFrom()}.
+     * The generator's return value is the state to resume from.
+     *
+     * @param array{offset:int,continuation:bool,sampled:int} $state
+     * @param list<string>                                     $selfNeedles
+     *
+     * @return \Generator<int,Tick&array{self:bool},void,array{offset:int,continuation:bool,sampled:int,done:bool}>
+     */
+    public function scanFrom(string $path, array $state, array $selfNeedles = [], int $patternEvery = 8, ?float $deadline = null): \Generator
     {
-        return $this->reader->firstTimestamp($path);
+        return $this->reader->scanFrom($path, $state, $selfNeedles, $patternEvery, $deadline);
     }
 
     /**

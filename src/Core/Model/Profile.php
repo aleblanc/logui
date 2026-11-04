@@ -33,9 +33,11 @@ final class Profile
     /** @return array<string,mixed> */
     public function toArray(): array
     {
-        // `records` is written LAST on purpose: it is the bulk of the line, and the explorer only
-        // needs the header to list a request. TelemetryHeader cuts the payload at `"records":`
-        // and decodes the prefix — cheap — so every key the list needs must come before it.
+        // A compact header first, the bulk after: the explorer lists and counts requests from the
+        // header alone. TelemetryHeader cuts the payload at `"queries":` and decodes the prefix —
+        // a couple of hundred bytes, however many slow queries, frames or records follow — so
+        // every key a list or a histogram needs must come before it (`sql_count`, `slow_count`
+        // and `has_exception` summarise what follows for that purpose).
         return [
             'id' => $this->id,
             'type' => $this->type->value,
@@ -47,10 +49,13 @@ final class Profile
             'mem_start_mb' => $this->memStartMb,
             'mem_end_mb' => $this->memEndMb,
             'mem_peak_mb' => $this->memPeakMb,
-            'queries' => $this->queries->toArray(),
             'levels' => $this->levels,
-            'exception' => $this->exception,
             'truncated' => $this->truncated,
+            'sql_count' => $this->queries->count,
+            'slow_count' => \count($this->queries->slow),
+            'has_exception' => null !== $this->exception,
+            'queries' => $this->queries->toArray(),
+            'exception' => $this->exception,
             'records' => array_map(static fn (LogRecord $r): array => $r->toArray(), $this->records),
         ];
     }

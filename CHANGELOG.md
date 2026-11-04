@@ -26,15 +26,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Histogram without text search counts from line headers**, file by file: Monolog lines are
   read up to their level only (full parse for warnings and above, and a sample of the rest for the
   patterns panel — exact below 2 000 info records per file). ~2× faster per line.
-- **Histogram cache** (`histogram_cache`, default on): the counts of a file wholly inside the
-  window and quiet for 10 min are stored in `%kernel.cache_dir%/logui`, keyed by path, size,
-  mtime, bucket width and filters. Bars are now aligned to the clock (`intdiv(ts, interval)`) so
-  a cached count fits any window; the chart clips the first bar to the window.
-- **Sampling**: when the files left will not fit in the budget, an even share of each is read and
-  the counts extrapolated; the response carries `sampled` (share read) and the UI shows `≈`.
-- **Warm-up after the response**: files that could only be sampled are counted in full once the
-  response is sent (`LogExplorer::warmHistogram()`, one at a time under a lock), so the next load is
-  exact. 7 days × 100 000 lines on a Pi: 4.6 s sampled, then milliseconds once warm.
+- **Incremental histogram index** (`histogram_cache`, default on): each log file gets a
+  per-minute index in `%kernel.cache_dir%/logui` (`Core\Query\MinuteIndex`) that remembers how far
+  it has read — a page load only reads the bytes appended since the previous one, active files
+  included, and any window (7, 14, 30 days) is answered from it. Per minute it counts each (type,
+  level, channel, own traffic) combination, so facet filters and `include_self` need no rebuild;
+  patterns are kept per hour and level. Rotation, recreation and truncation (even regrown past the
+  old size) are detected and trigger a rebuild. Bars are aligned to the clock
+  (`intdiv(ts, interval)`); the chart clips the first bar to the window.
+- **Sampling**: what no index covers yet and cannot be read within the budget is sampled — an even
+  share of each file — and scaled by the share actually read (a read cut by the budget no longer
+  undercounts). The response carries `sampled`; the UI shows `≈`.
+- **Warm-up after the response**: when something was sampled, `LogExplorer::warmHistogram()`
+  catches the indexes up once the response is sent (one request per file at a time, progress
+  saved), so the next load is exact.
+- **Compact telemetry header**: `Profile::toArray()` writes `levels`, `truncated`, `sql_count`,
+  `slow_count` and `has_exception` before `queries`/`exception`/`records`; `TelemetryHeader`
+  decodes only that prefix, without copying the line. Older layouts are still read.
+- Request latencies are kept as a duration histogram (exact to the ms below 1 s, ±1 % above).
+- On a Pi, 7 days + a 70 MB telemetry file + the day's file: 4.6 s sampled (~5 % off) on the first
+  load, then 0.6 s exact for any window up to 30 days.
 - Timestamp parsing resolves each ISO stamp once per second (microseconds no longer defeat the memo).
 - ANSI escapes are only stripped from lines that contain an escape character.
 - Log patterns memoise message → pattern, so repeated messages skip the six normalising regexes.

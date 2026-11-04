@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Aleblanc\LogUi\Core\Storage;
 
-use Aleblanc\LogUi\Core\Model\LogLevel;
 use Aleblanc\LogUi\Core\Time\TimestampParser;
 
 /**
@@ -61,8 +60,11 @@ final class PlainLogReader
     /** Info/debug records parsed in full before {@see scanRange()} starts sampling them for patterns. */
     private const PATTERN_EXACT_RECORDS = 2_000;
 
+    /** Monolog levels (as written) whose records are always parsed in full: rare, and worth naming. */
+    private const LOUD = ['WARNING' => true, 'ERROR' => true, 'CRITICAL' => true, 'ALERT' => true, 'EMERGENCY' => true];
+
     /** Sampling granularity of {@see scanRange()}: blocks are read whole or skipped whole. */
-    public const SAMPLE_BLOCK_BYTES = 256 * 1024;
+    public const SAMPLE_BLOCK_BYTES = 64 * 1024;
 
     private const MONOLOG = '/^\[(?<date>[^\]]+)\] (?<channel>[\w.\-]+)\.(?<level>[A-Z]+): (?<message>.*?)(?: (?<context>[\{\[].*?[\}\]]))?(?: (?<extra>[\{\[].*?[\}\]]))?\s*$/';
     // Symfony ConsoleHandler: "HH:MM:SS LEVEL [channel] message". Levels are listed explicitly so
@@ -284,11 +286,15 @@ final class PlainLogReader
      * of $excluding is skipped.
      *
      * @param list<string>                                     $excluding
-     * @param (callable(float,int,int,int,bool):void)|null     $report    as for {@see readRange()}
+     * @param (callable(float,int,int,int,bool,int):void)|null $report   as for {@see readRange()}, plus
+     *                                                                    the bytes the read went
+     *                                                                    through, skipped blocks included
+     * @param int                                              $minOffset never read before this byte —
+     *                                                                    what an index already covers
      *
      * @return \Generator<int,Tick>
      */
-    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null): \Generator
+    public function scanRange(string $path, int $fromMs, int $toMs, float $fraction = 1.0, int $patternEvery = 8, array $excluding = [], ?callable $report = null, int $minOffset = 0): \Generator
     {
         if (!is_file($path) || $fromMs > $toMs) {
             return;
@@ -303,27 +309,19 @@ final class PlainLogReader
         $yielded = 0;
         $seekMs = 0.0;
         $size = 0;
+        $start = null;
 
         try {
             $size = fstat($handle)['size'] ?? 0;
             $anchor = $this->anchorFor($path);
 
             $seekStarted = hrtime(true);
-            $start = (new LogSeeker(fn (string $line): ?int => $this->lineTimestamp($line, $anchor)))->offsetFor($handle, $size, $fromMs);
+            $start = max($minOffset, (new LogSeeker(fn (string $line): ?int => $this->lineTimestamp($line, $anchor)))->offsetFor($handle, $size, $fromMs));
             $seekMs = (hrtime(true) - $seekStarted) / 1e6;
 
             $beyond = 0;
             $inRange = false;
             $sampled = 0;
-            // Levels whose records are always parsed in full: rare, and the ones worth naming.
-            $loud = [];
-            foreach (LogLevel::all() as $name) {
-                if (LogLevel::severity($name) >= LogLevel::severity('warning')) {
-                    $loud[strtoupper($name)] = true;
-                }
-            }
-            $sentinel = TelemetryReader::SENTINEL;
-            $sentinelLength = \strlen($sentinel);
             // Reading the whole rest of the file needs no position check per line.
             $bounded = $fraction < 1.0;
 
@@ -354,31 +352,9 @@ final class PlainLogReader
                         continue;
                     }
 
-                    $tick = null;
-                    if ('[' === $line[0] && preg_match(self::MONOLOG_HEADER, $line, $m)
-                        && 0 !== substr_compare($line, $sentinel, \strlen($m[0]), $sentinelLength)) {
-                        $message = null;
-                        $weight = 1;
-                        if (isset($loud[$m[3]])) {
-                            $message = $this->classify($line)['row']['message'] ?? null;
-                        } elseif (++$sampled <= self::PATTERN_EXACT_RECORDS) {
-                            // A small file is counted exactly; sampling only starts past this many.
-                            $message = $this->classify($line)['row']['message'] ?? null;
-                        } elseif (0 === $sampled % $patternEvery) {
-                            $message = $this->classify($line)['row']['message'] ?? null;
-                            $weight = $patternEvery;
-                        }
-                        $level = strtolower($m[3]);
-                        $tick = ['ts' => $this->timestamps->parse($m[1]) ?? $this->timestampOf($m[1], $anchor), 'level' => $level, 'channel' => $m[2], 'type' => 'log', 'profile' => null, 'message' => $message, 'weight' => $weight];
-                        $allowContinuation = true;
-                    } elseif (null !== ($classified = $this->classify($line))) {
-                        $row = $this->stamp($classified['row'], $anchor);
-                        $tick = ['ts' => $row['ts'], 'level' => $row['level'], 'channel' => $row['channel'], 'type' => $row['type'], 'profile' => $row['profile'], 'message' => $row['message'], 'weight' => 1];
-                        $allowContinuation = $classified['monolog'];
-                    } elseif ($allowContinuation) {
+                    $tick = $this->tickOf($line, $anchor, $allowContinuation, $sampled, $patternEvery);
+                    if (null === $tick) {
                         continue; // a stack-trace frame: part of the record above, not a record
-                    } else {
-                        $tick = ['ts' => null, 'level' => '', 'channel' => '', 'type' => 'log', 'profile' => null, 'message' => $line, 'weight' => 1];
                     }
 
                     $ts = $tick['ts'];
@@ -410,10 +386,135 @@ final class PlainLogReader
             }
         } finally {
             if (null !== $report) {
-                $report($seekMs, $read, $yielded, $size, false);
+                // How much of the file the read went through, skipped blocks included: read bytes
+                // over covered bytes is the share actually sampled, even when the read was cut short.
+                $end = ftell($handle);
+                $report($seekMs, $read, $yielded, $size, false, max($read, (false === $end ? 0 : $end) - ($start ?? 0)));
             }
             fclose($handle);
         }
+    }
+
+    /**
+     * Ticks of every record from a byte offset to the end of the file — what an incremental index
+     * reads on each catch-up, like the live tail.
+     *
+     * Stops at the last *complete* line: a line still being written (no newline yet) is left for
+     * the next call. Stops early at $deadline too. Either way the generator **returns** the state to
+     * resume from (`$generator->getReturn()`): the byte offset reached, whether a continuation line
+     * there would still belong to the record before it, and the pattern-sampling counter.
+     *
+     * Each tick also says whether its first line mentions one of $selfNeedles (`self`), so LogUI's
+     * own traffic can be told apart at query time instead of being dropped for good.
+     *
+     * @param array{offset:int,continuation:bool,sampled:int} $state
+     * @param list<string>                                     $selfNeedles
+     *
+     * @return \Generator<int,Tick&array{self:bool},void,array{offset:int,continuation:bool,sampled:int,done:bool}>
+     */
+    public function scanFrom(string $path, array $state, array $selfNeedles = [], int $patternEvery = 8, ?float $deadline = null): \Generator
+    {
+        $offset = $state['offset'];
+        $allowContinuation = $state['continuation'];
+        $sampled = $state['sampled'];
+        $done = true;
+
+        $handle = is_file($path) ? fopen($path, 'rb') : false;
+        if (false === $handle) {
+            return ['offset' => $offset, 'continuation' => $allowContinuation, 'sampled' => $sampled, 'done' => true];
+        }
+
+        try {
+            if (-1 === fseek($handle, $offset)) {
+                return ['offset' => $offset, 'continuation' => $allowContinuation, 'sampled' => $sampled, 'done' => true];
+            }
+            $anchor = $this->anchorFor($path);
+            $lines = 0;
+
+            while (true) {
+                if (null !== $deadline && 0 === ++$lines % 256 && microtime(true) > $deadline) {
+                    $done = false;
+                    break;
+                }
+                $raw = fgets($handle);
+                if (false === $raw || !str_ends_with($raw, "\n")) {
+                    break; // end of file, or a line still being written: next time
+                }
+                $offset += \strlen($raw);
+
+                $line = rtrim($raw, "\r\n");
+                if (str_contains($line, "\e")) {
+                    $line = preg_replace('/\e\[[0-9;]*m/', '', $line) ?? $line;
+                }
+                if ('' === $line) {
+                    continue;
+                }
+
+                $tick = $this->tickOf($line, $anchor, $allowContinuation, $sampled, $patternEvery);
+                if (null === $tick) {
+                    continue;
+                }
+
+                $self = false;
+                foreach ($selfNeedles as $needle) {
+                    if (str_contains($line, $needle)) {
+                        $self = true;
+                        break;
+                    }
+                }
+
+                yield $tick + ['self' => $self];
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return ['offset' => $offset, 'continuation' => $allowContinuation, 'sampled' => $sampled, 'done' => $done];
+    }
+
+    /**
+     * One line reduced to what a histogram counts, or null for a continuation line (a stack-trace
+     * frame belongs to the record above it).
+     *
+     * Monolog lines are only read up to their level; the full parse runs on warnings and above, on
+     * the first {@see PATTERN_EXACT_RECORDS} other records, then on one in $patternEvery (with that
+     * weight) — enough for the patterns panel.
+     *
+     * @param bool $allowContinuation in/out: whether a following unrecognised line continues this record
+     * @param int  $sampled           in/out: info/debug records seen, which drives the sampling
+     *
+     * @return Tick|null
+     */
+    private function tickOf(string $line, int $anchor, bool &$allowContinuation, int &$sampled, int $patternEvery): ?array
+    {
+        if ('[' === $line[0] && preg_match(self::MONOLOG_HEADER, $line, $m)
+            && 0 !== substr_compare($line, TelemetryReader::SENTINEL, \strlen($m[0]), \strlen(TelemetryReader::SENTINEL))) {
+            $message = null;
+            $weight = 1;
+            if (isset(self::LOUD[$m[3]]) || ++$sampled <= self::PATTERN_EXACT_RECORDS) {
+                $message = $this->classify($line)['row']['message'] ?? null;
+            } elseif (0 === $sampled % $patternEvery) {
+                $message = $this->classify($line)['row']['message'] ?? null;
+                $weight = $patternEvery;
+            }
+            $allowContinuation = true;
+
+            return ['ts' => $this->timestamps->parse($m[1]) ?? $this->timestampOf($m[1], $anchor), 'level' => strtolower($m[3]), 'channel' => $m[2], 'type' => 'log', 'profile' => null, 'message' => $message, 'weight' => $weight];
+        }
+
+        $classified = $this->classify($line);
+        if (null !== $classified) {
+            $row = $this->stamp($classified['row'], $anchor);
+            $allowContinuation = $classified['monolog'];
+
+            return ['ts' => $row['ts'], 'level' => $row['level'], 'channel' => $row['channel'], 'type' => $row['type'], 'profile' => $row['profile'], 'message' => $row['message'], 'weight' => 1];
+        }
+
+        if ($allowContinuation) {
+            return null;
+        }
+
+        return ['ts' => null, 'level' => '', 'channel' => '', 'type' => 'log', 'profile' => null, 'message' => $line, 'weight' => 1];
     }
 
     /**
@@ -460,25 +561,6 @@ final class PlainLogReader
         }
 
         return true;
-    }
-
-    /**
-     * The first timestamp of a file — enough to tell whether it lies wholly inside a window.
-     * Reads at most a few hundred records from the top.
-     */
-    public function firstTimestamp(string $path): ?int
-    {
-        $seen = 0;
-        foreach ($this->read($path) as $row) {
-            if (null !== $row['ts']) {
-                return $row['ts'];
-            }
-            if (++$seen >= 200) {
-                break;
-            }
-        }
-
-        return null;
     }
 
     /** Epoch ms of a raw date string — {@see stamp()} without building a row. */

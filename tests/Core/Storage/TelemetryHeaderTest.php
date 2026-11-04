@@ -140,4 +140,41 @@ final class TelemetryHeaderTest extends TestCase
         self::assertSame('request', TelemetryHeader::rowType('http'));
         self::assertSame('command', TelemetryHeader::rowType('cli'));
     }
+
+    public function test_the_compact_header_is_read_without_the_bulk_that_follows(): void
+    {
+        $slow = [];
+        for ($i = 0; $i < 200; ++$i) {
+            $slow[] = ['sql' => 'SELECT * FROM ad WHERE id = '.$i.' -- "queries": decoy', 'ms' => 60.0 + $i];
+        }
+        $profile = new Profile(
+            'abc123', ProfileType::Http, new \DateTimeImmutable('2026-10-13T12:00:00+00:00'), 'GET app_home', 500, 83.8, 4.0,
+            new QueryStats(250, $slow), ['error' => 1], [], ['class' => 'RuntimeException', 'message' => 'boom', 'trace' => str_repeat('#0 frame'."\n", 500)], false,
+        );
+        $payload = json_encode($profile->toArray(), \JSON_UNESCAPED_SLASHES);
+
+        self::assertLessThan(500, strpos($payload, ',"queries":'), 'the header comes first');
+        $header = TelemetryHeader::extract($payload);
+
+        self::assertNotNull($header);
+        self::assertSame(250, $header['sql']);
+        self::assertSame(200, $header['slow']);
+        self::assertTrue($header['exception']);
+        self::assertTrue($header['failed']);
+        self::assertSame(['error' => 1], $header['levels']);
+    }
+
+    public function test_lines_written_before_the_compact_header_still_read(): void
+    {
+        // `records` last, but no `sql_count`: the previous layout.
+        $payload = '{"id":"old1","type":"http","at":"2026-10-13T12:00:00+00:00","label":"GET x","method":"GET","status":200,"duration_ms":12.5,"mem_peak_mb":3.0,'
+            .'"queries":{"count":4,"slow":[{"sql":"SELECT 1","ms":80}]},"levels":{"info":2},"exception":null,"truncated":false,"records":[]}';
+
+        $header = TelemetryHeader::extract($payload);
+
+        self::assertNotNull($header);
+        self::assertSame(4, $header['sql']);
+        self::assertSame(1, $header['slow']);
+        self::assertFalse($header['exception']);
+    }
 }

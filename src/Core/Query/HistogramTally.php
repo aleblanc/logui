@@ -5,22 +5,29 @@ declare(strict_types=1);
 namespace Aleblanc\LogUi\Core\Query;
 
 /**
- * Everything one histogram counts — bars, facets, patterns, request statistics — for some set of
- * records, in a form that can be merged, scaled and stored.
- *
- * That is what lets a histogram be built file by file: a rotated file's tally is computed once and
- * cached ({@see HistogramCache}), a sampled file's tally is scaled up to stand for the whole file,
- * and the tallies of every file are merged into the answer.
+ * Everything one histogram counts — bars, facets, patterns, request statistics — in a form that
+ * can be fed record by record (a direct read), cell by cell (a {@see MinuteIndex}), and merged
+ * with scaling (a sampled read).
  *
  * Bars sit on slots aligned to the clock (`intdiv($ts, $interval) * $interval`), not to the start
- * of the window: a slot then means the same thing whatever window asks for it, which is what makes
- * a cached tally reusable from one page load to the next.
+ * of the window: a slot then means the same thing whatever window asks for it, which is what lets
+ * minutes stored in an index be regrouped into any bar width.
  *
- * @phpstan-type Bucket array{count:int,levels:array<string,int>,requests:int,durations:list<float>}
+ * Request durations are kept as a histogram ({@see durationBin()}) rather than a list: exact to the
+ * millisecond below one second, within 1 % above, and bounded in size however busy the window.
+ *
+ * @phpstan-type Bins array<int,int>
+ * @phpstan-type Bucket array{count:int,levels:array<string,int>,requests:int,bins:Bins}
  * @phpstan-type Facets array{type:array<string,int>,level:array<string,int>,channel:array<string,int>,file:array<string,int>}
  */
 final class HistogramTally
 {
+    /** Below this, a duration bin is the duration rounded to the millisecond. */
+    private const EXACT_MS = 1000;
+
+    /** Above {@see EXACT_MS}, bins grow geometrically by this ratio (±1 %). */
+    private const BIN_RATIO = 1.02;
+
     /** @var array<int,Bucket> slot (epoch ms) => bucket */
     private array $buckets = [];
 
@@ -33,8 +40,8 @@ final class HistogramTally
     private int $failed = 0;
     private int $sql = 0;
 
-    /** @var list<float> */
-    private array $durations = [];
+    /** @var Bins */
+    private array $bins = [];
 
     private Patterns $patterns;
 
@@ -48,7 +55,27 @@ final class HistogramTally
         return $this->interval;
     }
 
-    /** A record the search kept: it counts in the facets, before the facet selection applies. */
+    /** Duration (ms) → bin: the millisecond below one second, a 2 % step above. */
+    public static function durationBin(float $ms): int
+    {
+        if ($ms < self::EXACT_MS) {
+            return max(0, (int) round($ms));
+        }
+
+        return self::EXACT_MS + (int) floor(log($ms / self::EXACT_MS) / log(self::BIN_RATIO));
+    }
+
+    /** Bin → the duration it stands for. */
+    public static function binValue(int $bin): float
+    {
+        if ($bin < self::EXACT_MS) {
+            return (float) $bin;
+        }
+
+        return round(self::EXACT_MS * self::BIN_RATIO ** ($bin - self::EXACT_MS + 0.5), 1);
+    }
+
+    /** A record (or $weight identical ones) the search kept: it counts in the facets, before the facet selection applies. */
     public function facet(string $type, string $level, string $channel, string $file, int $weight = 1): void
     {
         $this->matched += $weight;
@@ -65,6 +92,12 @@ final class HistogramTally
         $this->patterns->add($message, $level, $weight);
     }
 
+    /** A pattern already normalised (read back from an index). */
+    public function patternKey(string $pattern, string $sample, string $level, int $count): void
+    {
+        $this->patterns->addKey($pattern, $sample, $level, $count);
+    }
+
     /**
      * A record every filter kept: it counts in the request statistics and, when datable, in its bar.
      *
@@ -72,38 +105,53 @@ final class HistogramTally
      */
     public function record(?int $ts, string $level, ?array $profile): void
     {
-        $duration = null;
+        $bins = [];
+        $failed = 0;
+        $sql = 0;
         if (null !== $profile) {
-            $duration = (float) ($profile['duration_ms'] ?? 0);
-            $this->durations[] = $duration;
-            ++$this->requests;
-            $this->sql += (int) ($profile['sql'] ?? 0);
-            if ($profile['failed'] ?? false) {
-                ++$this->failed;
-            }
+            $bins[self::durationBin((float) ($profile['duration_ms'] ?? 0))] = 1;
+            $sql = (int) ($profile['sql'] ?? 0);
+            $failed = ($profile['failed'] ?? false) ? 1 : 0;
+        }
+        $this->cell($ts, true, $level, 1, null !== $profile ? 1 : 0, $failed, $sql, $bins);
+    }
+
+    /**
+     * $count records that share a minute, a level and their request statistics — one cell of a
+     * {@see MinuteIndex}, or one record.
+     *
+     * @param bool $dated false for undatable lines: they count in the totals, not on a bar
+     * @param Bins $bins  request durations
+     */
+    public function cell(?int $ts, bool $dated, string $level, int $count, int $requests, int $failed, int $sql, array $bins): void
+    {
+        $this->requests += $requests;
+        $this->failed += $failed;
+        $this->sql += $sql;
+        foreach ($bins as $bin => $n) {
+            $this->bins[$bin] = ($this->bins[$bin] ?? 0) + $n;
         }
 
-        if (null === $ts) {
+        if (!$dated || null === $ts) {
             return; // undatable lines cannot be placed on a time axis
         }
 
         $slot = intdiv($ts, $this->interval) * $this->interval;
         $bucket = &$this->buckets[$slot];
-        $bucket ??= ['count' => 0, 'levels' => [], 'requests' => 0, 'durations' => []];
-        ++$bucket['count'];
-        $bucket['levels'][$level] = ($bucket['levels'][$level] ?? 0) + 1;
-        if (null !== $duration) {
-            ++$bucket['requests'];
-            $bucket['durations'][] = $duration;
+        $bucket ??= ['count' => 0, 'levels' => [], 'requests' => 0, 'bins' => []];
+        $bucket['count'] += $count;
+        $bucket['levels'][$level] = ($bucket['levels'][$level] ?? 0) + $count;
+        $bucket['requests'] += $requests;
+        foreach ($bins as $bin => $n) {
+            $bucket['bins'][$bin] = ($bucket['bins'][$bin] ?? 0) + $n;
         }
         unset($bucket);
-        ++$this->total;
+        $this->total += $count;
     }
 
     /**
-     * Folds another tally into this one, its counts multiplied by $factor — a sampled file's tally
-     * stands for the whole file that way. Durations are kept as they are: they feed percentiles,
-     * which a sample estimates without scaling.
+     * Folds another tally into this one, its counts multiplied by $factor — a sampled read stands
+     * for the whole range that way. Duration bins are kept as they are: percentiles do not scale.
      */
     public function merge(self $other, float $factor = 1.0): void
     {
@@ -111,13 +159,15 @@ final class HistogramTally
 
         foreach ($other->buckets as $slot => $b) {
             $bucket = &$this->buckets[$slot];
-            $bucket ??= ['count' => 0, 'levels' => [], 'requests' => 0, 'durations' => []];
+            $bucket ??= ['count' => 0, 'levels' => [], 'requests' => 0, 'bins' => []];
             $bucket['count'] += $scale($b['count']);
             foreach ($b['levels'] as $level => $n) {
                 $bucket['levels'][$level] = ($bucket['levels'][$level] ?? 0) + $scale($n);
             }
             $bucket['requests'] += $scale($b['requests']);
-            array_push($bucket['durations'], ...$b['durations']);
+            foreach ($b['bins'] as $bin => $n) {
+                $bucket['bins'][$bin] = ($bucket['bins'][$bin] ?? 0) + $n;
+            }
             unset($bucket);
         }
         foreach ($other->facets as $field => $counts) {
@@ -125,85 +175,40 @@ final class HistogramTally
                 $this->facets[$field][$value] = ($this->facets[$field][$value] ?? 0) + $scale($n);
             }
         }
+        foreach ($other->bins as $bin => $n) {
+            $this->bins[$bin] = ($this->bins[$bin] ?? 0) + $n;
+        }
         $this->matched += $scale($other->matched);
         $this->total += $scale($other->total);
         $this->requests += $scale($other->requests);
         $this->failed += $scale($other->failed);
         $this->sql += $scale($other->sql);
-        array_push($this->durations, ...$other->durations);
         $this->patterns->merge($other->patterns, $factor);
     }
 
     /**
-     * Plain data for the cache.
+     * Nearest-rank percentile of a duration histogram; 0 when empty.
      *
-     * @return array<string,mixed>
+     * @param Bins $bins
      */
-    public function export(): array
+    public static function percentile(array $bins, float $p): float
     {
-        return [
-            'interval' => $this->interval,
-            'buckets' => $this->buckets,
-            'facets' => $this->facets,
-            'matched' => $this->matched,
-            'total' => $this->total,
-            'requests' => $this->requests,
-            'failed' => $this->failed,
-            'sql' => $this->sql,
-            'durations' => $this->durations,
-            'patterns' => $this->patterns->export(),
-        ];
-    }
+        $n = array_sum($bins);
+        if (0 === $n) {
+            return 0.0;
+        }
 
-    /**
-     * The reverse of {@see export()}; null when the data is not a tally (a corrupt cache entry).
-     *
-     * @param array<array-key,mixed> $data
-     */
-    public static function import(array $data): ?self
-    {
-        foreach (['interval', 'matched', 'total', 'requests', 'failed', 'sql'] as $key) {
-            if (!\is_int($data[$key] ?? null)) {
-                return null;
+        ksort($bins);
+        $rank = max(1, (int) ceil($p * $n));
+        $seen = 0;
+        foreach ($bins as $bin => $count) {
+            $seen += $count;
+            if ($seen >= $rank) {
+                return self::binValue($bin);
             }
         }
-        foreach (['buckets', 'facets', 'durations', 'patterns'] as $key) {
-            if (!\is_array($data[$key] ?? null)) {
-                return null;
-            }
-        }
-        /** @var int $interval */
-        $interval = $data['interval'];
-        if ($interval <= 0) {
-            return null;
-        }
 
-        $tally = new self($interval);
-        /** @var array<int,Bucket> $buckets */
-        $buckets = $data['buckets'];
-        $tally->buckets = $buckets;
-        /** @var Facets $facets */
-        $facets = $data['facets'] + ['type' => [], 'level' => [], 'channel' => [], 'file' => []];
-        $tally->facets = $facets;
-        /** @var list<float> $durations */
-        $durations = array_map(floatval(...), array_values($data['durations']));
-        $tally->durations = $durations;
-        /** @var array<string,array{count:int,sample:string,level:string,rank:int}> $patterns */
-        $patterns = $data['patterns'];
-        $tally->patterns = Patterns::import($patterns);
-        /** @var int $matched */
-        $matched = $data['matched'];
-        /** @var int $total */
-        $total = $data['total'];
-        /** @var int $requests */
-        $requests = $data['requests'];
-        /** @var int $failed */
-        $failed = $data['failed'];
-        /** @var int $sql */
-        $sql = $data['sql'];
-        [$tally->matched, $tally->total, $tally->requests, $tally->failed, $tally->sql] = [$matched, $total, $requests, $failed, $sql];
-
-        return $tally;
+        return self::binValue((int) array_key_last($bins));
     }
 
     /**
@@ -217,13 +222,11 @@ final class HistogramTally
         ksort($this->buckets);
         foreach ($this->buckets as $slot => $b) {
             $latency = null;
-            if ([] !== $b['durations']) {
-                $durations = $b['durations'];
-                sort($durations);
+            if ([] !== $b['bins']) {
                 $latency = [
-                    'n' => \count($durations),
-                    'p50' => LogExplorer::percentile($durations, 0.5),
-                    'p95' => LogExplorer::percentile($durations, 0.95),
+                    'n' => array_sum($b['bins']),
+                    'p50' => self::percentile($b['bins'], 0.5),
+                    'p95' => self::percentile($b['bins'], 0.95),
                 ];
             }
             $buckets[] = ['ts' => $slot, 'count' => $b['count'], 'levels' => $b['levels'], 'requests' => $b['requests'], 'latency' => $latency];
@@ -235,9 +238,6 @@ final class HistogramTally
         }
         unset($counts);
 
-        $durations = $this->durations;
-        sort($durations);
-
         return [
             'buckets' => $buckets,
             'facets' => $facets,
@@ -245,8 +245,8 @@ final class HistogramTally
             'profiles' => [
                 'count' => $this->requests,
                 'failed' => $this->failed,
-                'p50' => LogExplorer::percentile($durations, 0.5),
-                'p95' => LogExplorer::percentile($durations, 0.95),
+                'p50' => self::percentile($this->bins, 0.5),
+                'p95' => self::percentile($this->bins, 0.95),
                 'sql' => $this->sql,
             ],
             'total' => $this->total,

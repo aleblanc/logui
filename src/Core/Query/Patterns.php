@@ -57,15 +57,26 @@ final class Patterns
     /** @param int $weight how many records this one stands for — more than 1 when sampling */
     public function add(string $message, string $level, int $weight = 1): void
     {
+        $this->count($this->keyOf($message), $weight, $message, $level);
+    }
+
+    /** Counts a message whose pattern is already known — read back from an index. */
+    public function addKey(string $pattern, string $sample, string $level, int $count): void
+    {
+        $this->count($pattern, $count, $sample, $level);
+    }
+
+    /** {@see normalize()}, memoised: logs repeat themselves verbatim. */
+    public function keyOf(string $message): string
+    {
         if (isset($this->memo[$message])) {
-            $key = $this->memo[$message];
-        } else {
-            if (\count($this->memo) >= self::MEMO_MAX) {
-                $this->memo = [];
-            }
-            $key = $this->memo[$message] = self::normalize($message);
+            return $this->memo[$message];
         }
-        $this->count($key, $weight, $message, $level);
+        if (\count($this->memo) >= self::MEMO_MAX) {
+            $this->memo = [];
+        }
+
+        return $this->memo[$message] = self::normalize($message);
     }
 
     /** Folds another counter into this one — the per-file counters of one histogram. */
@@ -74,28 +85,6 @@ final class Patterns
         foreach ($other->seen as $key => $v) {
             $this->count((string) $key, 1.0 === $factor ? $v['count'] : (int) round($v['count'] * $factor), $v['sample'], $v['level']);
         }
-    }
-
-    /**
-     * The most frequent patterns, as plain data — what a cached histogram keeps.
-     *
-     * @return array<string,array{count:int,sample:string,level:string,rank:int}>
-     */
-    public function export(int $keep = 1000): array
-    {
-        $all = $this->seen;
-        uasort($all, static fn (array $a, array $b): int => $b['count'] <=> $a['count']);
-
-        return \array_slice($all, 0, $keep, true);
-    }
-
-    /** @param array<string,array{count:int,sample:string,level:string,rank:int}> $seen */
-    public static function import(array $seen): self
-    {
-        $patterns = new self();
-        $patterns->seen = $seen;
-
-        return $patterns;
     }
 
     private function count(string $key, int $weight, string $sample, string $level): void

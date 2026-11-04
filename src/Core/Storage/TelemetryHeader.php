@@ -10,15 +10,23 @@ use Aleblanc\LogUi\Core\Model\LogLevel;
  * The part of a `LOGUI@{json}` line the explorer needs to *list* a request — everything but the
  * records.
  *
- * A telemetry line carries the whole capture, often several kilobytes of records. Decoding that
- * for every line of a production log (which can be mostly telemetry) would make the explorer
- * crawl. Profile::toArray() writes `records` last, so the payload can be cut there and the prefix
- * decoded on its own: a few hundred bytes per line.
+ * A telemetry line carries the whole capture, often several kilobytes of records — tens with slow
+ * queries and an exception trace. Decoding that for every line of a production log (which can be
+ * mostly telemetry) would make the explorer crawl. Profile::toArray() writes a compact header
+ * first and the bulk after it, so the payload is cut where the bulk starts and only the prefix is
+ * decoded: a couple of hundred bytes per line, without even copying the rest of it.
+ *
+ * Three layouts are read, newest first:
+ *  - compact header (`sql_count`… before `"queries":`) — cut at `"queries":`;
+ *  - `records` last — cut at `"records":`;
+ *  - older lines — decoded whole.
  *
  * @phpstan-type Header array{id:string,type:string,at:string,label:string,method:?string,status:?int,duration_ms:float,mem_peak_mb:float,sql:int,slow:int,levels:array<string,int>,exception:bool,failed:bool}
  */
 final class TelemetryHeader
 {
+    private const CUT_COMPACT = ',"queries":';
+    private const COMPACT_MARK = '"sql_count":';
     private const CUT = ',"records":';
 
     /**
@@ -29,22 +37,37 @@ final class TelemetryHeader
     public static function extract(string $payload): ?array
     {
         $start = strpos($payload, '{');
-        $end = strrpos($payload, '}');
-        if (false === $start || false === $end || $end < $start) {
+        if (false === $start) {
             return null;
         }
-        $json = substr($payload, $start, $end - $start + 1);
 
         $data = null;
-        $cut = strpos($json, self::CUT);
+        // Compact header: everything needed sits before `"queries":`, a few hundred bytes in.
+        $cut = strpos($payload, self::CUT_COMPACT, $start);
         if (false !== $cut) {
-            $data = json_decode(substr($json, 0, $cut).'}', true);
+            $mark = strpos($payload, self::COMPACT_MARK, $start);
+            if (false !== $mark && $mark < $cut) {
+                $data = json_decode(substr($payload, $start, $cut - $start).'}', true);
+            }
         }
 
-        // Lines written before `records` moved to the end lose the keys that followed it when
-        // cut. `truncated` was one of them: its absence means "old layout", decode it whole.
-        if (!\is_array($data) || !\array_key_exists('truncated', $data)) {
-            $data = json_decode($json, true);
+        if (!\is_array($data)) {
+            $end = strrpos($payload, '}');
+            if (false === $end || $end < $start) {
+                return null;
+            }
+            $json = substr($payload, $start, $end - $start + 1);
+
+            $cut = strpos($json, self::CUT);
+            if (false !== $cut) {
+                $data = json_decode(substr($json, 0, $cut).'}', true);
+            }
+
+            // Lines written before `records` moved to the end lose the keys that followed it when
+            // cut. `truncated` was one of them: its absence means "old layout", decode it whole.
+            if (!\is_array($data) || !\array_key_exists('truncated', $data)) {
+                $data = json_decode($json, true);
+            }
         }
 
         if (!\is_array($data) || !isset($data['id'], $data['type'], $data['at'])) {
@@ -55,6 +78,7 @@ final class TelemetryHeader
         $status = isset($data['status']) ? (int) $data['status'] : null;
         /** @var array<string,mixed> $queries */
         $queries = \is_array($data['queries'] ?? null) ? $data['queries'] : [];
+        $compact = \array_key_exists('sql_count', $data);
 
         $levels = [];
         foreach (\is_array($data['levels'] ?? null) ? $data['levels'] : [] as $name => $count) {
@@ -70,10 +94,10 @@ final class TelemetryHeader
             'status' => $status,
             'duration_ms' => (float) ($data['duration_ms'] ?? 0),
             'mem_peak_mb' => (float) ($data['mem_peak_mb'] ?? 0),
-            'sql' => (int) ($queries['count'] ?? 0),
-            'slow' => \is_array($queries['slow'] ?? null) ? \count($queries['slow']) : 0,
+            'sql' => $compact ? (int) $data['sql_count'] : (int) ($queries['count'] ?? 0),
+            'slow' => $compact ? (int) ($data['slow_count'] ?? 0) : (\is_array($queries['slow'] ?? null) ? \count($queries['slow']) : 0),
             'levels' => $levels,
-            'exception' => \is_array($data['exception'] ?? null),
+            'exception' => $compact ? (bool) ($data['has_exception'] ?? false) : \is_array($data['exception'] ?? null),
             'failed' => self::failed($type, $status),
         ];
     }
