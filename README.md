@@ -2,6 +2,8 @@
 
 > **Log viewer & lightweight profiler for Symfony.** It plugs into your existing logs — no separate store, no database, no build step. MIT licensed.
 
+**[▶ Live demo](https://localestudio-7l3r.onrender.com/_logui)** — LogUI running inside [LocaleStudio](https://github.com/aleblanc/LocaleStudio), a Symfony 8 translation app. Sign in with the demo account shown under the form (`admin@example.com` / `admin1234`) and you land on the explorer. Free hosting: after 15 idle minutes, the first visit takes about a minute to wake the app up.
+
 LogUI is an embeddable Composer package (in the spirit of Laravel Telescope / the Symfony Profiler)
 that adds a small **web UI** to your app to browse requests, console commands and raw log files.
 
