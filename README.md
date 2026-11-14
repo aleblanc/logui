@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="screenshots/banner.jpg" width="960" alt="LogUI — log explorer, live tail and lightweight profiler for Symfony">
+</p>
+
 # 🔎 LogUI
 
 > **Log viewer & lightweight profiler for Symfony.** It plugs into your existing logs — no separate store, no database, no build step. MIT licensed.
